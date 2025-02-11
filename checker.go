@@ -481,16 +481,14 @@ var reportTemplate = `
         {{end}}
     </table>
     <h2>Dependency Graph Visualization</h2>
-    <p>The graphs below represent the dependency trees for Node.js and Python dependencies.</p>
+    <p>The graphs below represent the dependency trees for Node.js and Python.</p>
     <h3>Node.js Dependency Tree</h3>
     <div id="nodeGraph"></div>
     <h3>Python Dependency Tree</h3>
     <div id="pythonGraph"></div>
     <script src="https://d3js.org/d3.v6.min.js"></script>
     <script>
-    // Node.js Graph Data
     var nodeData = {{.NodeTreeJSON}};
-    // Python Graph Data
     var pythonData = {{.PythonTreeJSON}};
     
     function renderTree(data, elementId) {
@@ -552,6 +550,88 @@ var reportTemplate = `
 </html>
 `
 
+func dependencyTreeJSON(nodeDeps []*NodeDependency, pythonDeps []*PythonDependency) (string, string, error) {
+	nodeJSONBytes, err := json.MarshalIndent(nodeDeps, "", "  ")
+	if err != nil {
+		return "", "", err
+	}
+	pythonJSONBytes, err := json.MarshalIndent(pythonDeps, "", "  ")
+	if err != nil {
+		return "", "", err
+	}
+	return string(nodeJSONBytes), string(pythonJSONBytes), nil
+}
+
+func flattenNodeDeps(nds []*NodeDependency, parent string) []FlatDep {
+	var flats []FlatDep
+	for _, nd := range nds {
+		flat := FlatDep{
+			Name:     nd.Name,
+			Version:  nd.Version,
+			License:  nd.License,
+			Details:  nd.Details,
+			Language: nd.Language,
+			Parent:   parent,
+		}
+		flats = append(flats, flat)
+		if len(nd.Transitive) > 0 {
+			trans := flattenNodeDeps(nd.Transitive, nd.Name)
+			flats = append(flats, trans...)
+		}
+	}
+	return flats
+}
+
+func flattenPythonDeps(pds []*PythonDependency, parent string) []FlatDep {
+	var flats []FlatDep
+	for _, pd := range pds {
+		flat := FlatDep{
+			Name:     pd.Name,
+			Version:  pd.Version,
+			License:  pd.License,
+			Details:  pd.Details,
+			Language: pd.Language,
+			Parent:   parent,
+		}
+		flats = append(flats, flat)
+		if len(pd.Transitive) > 0 {
+			trans := flattenPythonDeps(pd.Transitive, pd.Name)
+			flats = append(flats, trans...)
+		}
+	}
+	return flats
+}
+
+type FlatDep struct {
+	Name     string
+	Version  string
+	License  string
+	Details  string
+	Language string
+	Parent   string
+}
+
+type ReportTemplateData struct {
+	Summary         string
+	FlatDeps        []FlatDep
+	NodeTreeJSON    template.JS
+	PythonTreeJSON  template.JS
+}
+
+func generateHTMLReport(data ReportTemplateData) error {
+	tmpl, err := template.New("report").Parse(reportTemplate)
+	if err != nil {
+		return err
+	}
+	reportFile := "dependency-license-report.html"
+	f, err := os.Create(reportFile)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return tmpl.Execute(f, data)
+}
+
 // --------------------- Main ---------------------
 
 func main() {
@@ -588,7 +668,7 @@ func main() {
 	flatDeps := append(flatNode, flatPython...)
 
 	// Create summary information.
-	summary := fmt.Sprintf("%d direct Node.js dependencies, %d direct Python dependencies. ", len(nodeDeps), len(pythonDeps))
+	summary := fmt.Sprintf("%d direct Node.js dependencies, %d direct Python dependencies.", len(nodeDeps), len(pythonDeps))
 
 	// Generate JSON for graph visualization.
 	nodeJSON, pythonJSON, err := dependencyTreeJSON(nodeDeps, pythonDeps)
