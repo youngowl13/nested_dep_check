@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+
 	"io/fs"
 )
 
@@ -95,7 +96,7 @@ type NodeDependency struct {
 func resolveNodeDependency(pkgName, version string, visited map[string]bool) (*NodeDependency, error) {
 	key := pkgName + "@" + version
 	if visited[key] {
-		return nil, nil
+		return nil, nil // cycle detected
 	}
 	visited[key] = true
 
@@ -217,7 +218,7 @@ type PythonDependency struct {
 func resolvePythonDependency(pkgName, version string, visited map[string]bool) (*PythonDependency, error) {
 	key := pkgName + "@" + version
 	if visited[key] {
-		return nil, nil
+		return nil, nil // cycle detected
 	}
 	visited[key] = true
 	url := fmt.Sprintf("https://pypi.org/pypi/%s/json", pkgName)
@@ -226,21 +227,17 @@ func resolvePythonDependency(pkgName, version string, visited map[string]bool) (
 		return nil, err
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("PyPI returned status: %s", resp.Status)
 	}
-
 	var data map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		return nil, err
 	}
-
 	info, ok := data["info"].(map[string]interface{})
 	if !ok {
 		return nil, fmt.Errorf("info not found for %s", pkgName)
 	}
-
 	ver := version
 	if ver == "" {
 		if rel, ok := info["version"].(string); ok {
@@ -260,14 +257,11 @@ func resolvePythonDependency(pkgName, version string, visited map[string]bool) (
 			return nil, fmt.Errorf("version %s not found for %s", ver, pkgName)
 		}
 	}
-
 	lic := "Unknown"
 	if l, ok := info["license"].(string); ok {
 		lic = l
 	}
 	details := url
-
-	// For simplicity, transitive resolution for Python is not fully implemented.
 	return &PythonDependency{
 		Name:     pkgName,
 		Version:  ver,
@@ -284,18 +278,15 @@ func parsePythonDependencies(filePath string) ([]*PythonDependency, error) {
 		return nil, fmt.Errorf("could not open requirements.txt: %w", err)
 	}
 	defer file.Close()
-
-	requirements, err := parseRequirements(file)
+	reqs, err := parseRequirements(file)
 	if err != nil {
 		return nil, err
 	}
-
-	var resolvedDeps []*PythonDependency
+	var resolved []*PythonDependency
 	var wg sync.WaitGroup
 	depChan := make(chan PythonDependency)
 	errChan := make(chan error)
-
-	for _, req := range requirements {
+	for _, r := range reqs {
 		wg.Add(1)
 		go func(r requirement) {
 			defer wg.Done()
@@ -307,32 +298,29 @@ func parsePythonDependencies(filePath string) ([]*PythonDependency, error) {
 			if dep != nil {
 				depChan <- *dep
 			}
-		}(req)
+		}(r)
 	}
-
 	go func() {
 		wg.Wait()
 		close(depChan)
 		close(errChan)
 	}()
-
-	for dep := range depChan {
-		resolvedDeps = append(resolvedDeps, &dep)
+	for d := range depChan {
+		resolved = append(resolved, &d)
 	}
 	for err := range errChan {
 		log.Println(err)
 	}
-
-	return resolvedDeps, nil
+	return resolved, nil
 }
 
 type requirement struct {
 	name    string
-	version string // Simplified; doesn't handle complex specifiers
+	version string
 }
 
 func parseRequirements(r io.Reader) ([]requirement, error) {
-	var requirements []requirement
+	var reqs []requirement
 	content, err := io.ReadAll(r)
 	if err != nil {
 		return nil, err
@@ -353,9 +341,9 @@ func parseRequirements(r io.Reader) ([]requirement, error) {
 		}
 		name := strings.TrimSpace(parts[0])
 		version := strings.TrimSpace(parts[1])
-		requirements = append(requirements, requirement{name: name, version: version})
+		reqs = append(reqs, requirement{name: name, version: version})
 	}
-	return requirements, nil
+	return reqs, nil
 }
 
 // --------------------- Flatten Dependencies ---------------------
@@ -663,7 +651,78 @@ func flattenPythonDeps(pds []*PythonDependency, parent string) []FlatDep {
 	return flats
 }
 
-// --------------------- Main ---------------------
+// --------------------- JSON for Graph Visualization ---------------------
+
+func dependencyTreeJSON(nodeDeps []*NodeDependency, pythonDeps []*PythonDependency) (string, string, error) {
+	dummyNode := map[string]interface{}{
+		"Name":       "Node.js Dependencies",
+		"Version":    "",
+		"Transitive": nodeDeps,
+	}
+	dummyPython := map[string]interface{}{
+		"Name":       "Python Dependencies",
+		"Version":    "",
+		"Transitive": pythonDeps,
+	}
+	nodeJSONBytes, err := json.MarshalIndent(dummyNode, "", "  ")
+	if err != nil {
+		return "", "", err
+	}
+	pythonJSONBytes, err := json.MarshalIndent(dummyPython, "", "  ")
+	if err != nil {
+		return "", "", err
+	}
+	return string(nodeJSONBytes), string(pythonJSONBytes), nil
+}
+
+// --------------------- Copyleft Summary ---------------------
+
+func hasCopyleftTransitiveNode(dep *NodeDependency) bool {
+	for _, t := range dep.Transitive {
+		if t.Copyleft || hasCopyleftTransitiveNode(t) {
+			return true
+		}
+	}
+	return false
+}
+
+func countCopyleftTransitivesNode(deps []*NodeDependency) int {
+	count := 0
+	for _, d := range deps {
+		if hasCopyleftTransitiveNode(d) {
+			count++
+		}
+	}
+	return count
+}
+
+func hasCopyleftTransitivePython(dep *PythonDependency) bool {
+	for _, t := range dep.Transitive {
+		if t.Copyleft || hasCopyleftTransitivePython(t) {
+			return true
+		}
+	}
+	return false
+}
+
+func countCopyleftTransitivesPython(deps []*PythonDependency) int {
+	count := 0
+	for _, d := range deps {
+		if hasCopyleftTransitivePython(d) {
+			count++
+		}
+	}
+	return count
+}
+
+// --------------------- Main Report Generation ---------------------
+
+type ReportTemplateData struct {
+	Summary         string
+	FlatDeps        []FlatDep
+	NodeTreeJSON    template.JS
+	PythonTreeJSON  template.JS
+}
 
 func main() {
 	// Locate Node.js package.json.
