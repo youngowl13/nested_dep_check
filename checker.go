@@ -379,7 +379,7 @@ func flattenPythonDependencies(pds []*PythonDependency, parent string) []FlatDep
 	return flats
 }
 
-// --------------------- JSON for Graph Visualization ---------------------
+// --------------------- JSON for Graph Visualization (Final) ---------------------
 
 func dependencyTreeJSONFinal(nodeDeps []*NodeDependency, pythonDeps []*PythonDependency) (string, string, error) {
 	dummyNode := map[string]interface{}{
@@ -488,9 +488,9 @@ var reportTemplate = `
             .attr("class", "link")
             .attr("d", function(d) {
                 return "M" + d.y + "," + d.x +
-                    "C" + (d.parent.y + 50) + "," + d.x +
-                    " " + (d.parent.y + 50) + "," + d.parent.x +
-                    " " + d.parent.y + "," + d.parent.x;
+                       "C" + (d.parent.y + 50) + "," + d.x +
+                       " " + (d.parent.y + 50) + "," + d.parent.x +
+                       " " + d.parent.y + "," + d.parent.x;
             })
             .attr("fill", "none")
             .attr("stroke", "#ccc");
@@ -614,7 +614,7 @@ func dependencyTreeJSONFinal(nodeDeps []*NodeDependency, pythonDeps []*PythonDep
 	return string(nodeJSONBytes), string(pythonJSONBytes), nil
 }
 
-// --------------------- Main Report Generation and Main ---------------------
+// --------------------- Main ---------------------
 
 func main() {
 	// Locate Node.js package.json.
