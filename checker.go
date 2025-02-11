@@ -16,9 +16,9 @@ import (
 	"sync"
 )
 
-// --------------------- Helper Functions ---------------------
+// -------------------- Helper Functions --------------------
 
-// isCopyleft returns true if the license string contains any copyleft keywords.
+// isCopyleft returns true if the given license contains any copyleft keyword.
 func isCopyleft(license string) bool {
 	copyleftLicenses := []string{
 		"GPL",
@@ -49,17 +49,17 @@ func isCopyleft(license string) bool {
 	return false
 }
 
-// isCopyleftLicense is an alias to isCopyleft.
+// Alias for convenience.
 func isCopyleftLicense(license string) bool {
 	return isCopyleft(license)
 }
 
-// ToUpper converts a string to uppercase.
+// ToUpper returns the uppercase version of a string.
 func ToUpper(s string) string {
 	return strings.ToUpper(s)
 }
 
-// findFile searches for the given target file starting at root.
+// findFile searches for a file with the given target name starting at root.
 func findFile(root, target string) string {
 	var found string
 	filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -75,18 +75,18 @@ func findFile(root, target string) string {
 	return found
 }
 
-// parseVariables scans the file content for variable definitions.
+// parseVariables scans file content for variable definitions (e.g. def cameraxVersion = "1.1.0-alpha05").
 func parseVariables(content string) map[string]string {
 	varMap := make(map[string]string)
 	re := regexp.MustCompile(`(?m)^\s*def\s+(\w+)\s*=\s*["']([^"']+)["']`)
 	matches := re.FindAllStringSubmatch(content, -1)
-	for _, match := range matches {
-		varMap[match[1]] = match[2]
+	for _, m := range matches {
+		varMap[m[1]] = m[2]
 	}
 	return varMap
 }
 
-// --------------------- Node.js Dependency Resolution ---------------------
+// -------------------- Node.js Dependency Resolution --------------------
 
 type NodeDependency struct {
 	Name       string            `json:"name"`
@@ -97,6 +97,7 @@ type NodeDependency struct {
 	Transitive []*NodeDependency `json:"transitive,omitempty"`
 }
 
+// resolveNodeDependency recursively resolves a Node.js dependency.
 func resolveNodeDependency(pkgName, version string, visited map[string]bool) (*NodeDependency, error) {
 	key := pkgName + "@" + version
 	if visited[key] {
@@ -148,17 +149,17 @@ func resolveNodeDependency(pkgName, version string, visited map[string]bool) (*N
 			}
 		}
 	}
-	nodeDep := &NodeDependency{
+	return &NodeDependency{
 		Name:       pkgName,
 		Version:    ver,
 		License:    lic,
 		Details:    details,
 		Copyleft:   isCopyleftLicense(lic),
 		Transitive: trans,
-	}
-	return nodeDep, nil
+	}, nil
 }
 
+// parseNodeDependencies reads package.json and recursively resolves its dependencies.
 func parseNodeDependencies(filePath string) ([]*NodeDependency, error) {
 	file, err := os.ReadFile(filePath)
 	if err != nil {
@@ -188,7 +189,7 @@ func parseNodeDependencies(filePath string) ([]*NodeDependency, error) {
 	return results, nil
 }
 
-// --------------------- Python Dependency Resolution ---------------------
+// -------------------- Python Dependency Resolution --------------------
 
 type PythonDependency struct {
 	Name       string              `json:"name"`
@@ -199,6 +200,7 @@ type PythonDependency struct {
 	Transitive []*PythonDependency `json:"transitive,omitempty"`
 }
 
+// resolvePythonDependency recursively resolves a Python dependency from PyPI.
 func resolvePythonDependency(pkgName, version string, visited map[string]bool) (*PythonDependency, error) {
 	key := pkgName + "@" + version
 	if visited[key] {
@@ -243,17 +245,17 @@ func resolvePythonDependency(pkgName, version string, visited map[string]bool) (
 			}
 		}
 	}
-	pyDep := &PythonDependency{
+	return &PythonDependency{
 		Name:       pkgName,
 		Version:    version,
 		License:    lic,
 		Details:    details,
 		Copyleft:   isCopyleftLicense(lic),
 		Transitive: trans,
-	}
-	return pyDep, nil
+	}, nil
 }
 
+// parsePythonDependencies reads requirements.txt (or requirement.txt) and recursively resolves dependencies.
 func parsePythonDependencies(filePath string) ([]*PythonDependency, error) {
 	file, err := os.ReadFile(filePath)
 	if err != nil {
@@ -280,7 +282,7 @@ func parsePythonDependencies(filePath string) ([]*PythonDependency, error) {
 	return results, nil
 }
 
-// --------------------- HTML Report Generation ---------------------
+// -------------------- HTML Report Generation --------------------
 
 type ReportData struct {
 	NodeDeps   []*NodeDependency
@@ -346,11 +348,12 @@ var reportTemplate = `
 `
 
 func generateHTMLReport(data ReportData) error {
-	tmpl, err := template.New("report").Funcs(template.FuncMap{
+	funcMap := template.FuncMap{
 		"ToUpper":           ToUpper,
 		"isCopyleft":        isCopyleft,
 		"isCopyleftLicense": isCopyleftLicense,
-	}).Parse(reportTemplate)
+	}
+	tmpl, err := template.New("report").Funcs(funcMap).Parse(reportTemplate)
 	if err != nil {
 		return fmt.Errorf("error parsing template: %v", err)
 	}
@@ -367,10 +370,10 @@ func generateHTMLReport(data ReportData) error {
 	return nil
 }
 
-// --------------------- Main ---------------------
+// -------------------- Main --------------------
 
 func main() {
-	// Locate Node.js package.json.
+	// Node.js: Locate package.json and resolve dependencies recursively.
 	nodeFile := findFile(".", "package.json")
 	var nodeDeps []*NodeDependency
 	if nodeFile != "" {
@@ -382,7 +385,7 @@ func main() {
 		}
 	}
 
-	// Locate Python requirements file.
+	// Python: Locate requirements.txt (or requirement.txt) and resolve dependencies recursively.
 	pythonFile := findFile(".", "requirements.txt")
 	if pythonFile == "" {
 		pythonFile = findFile(".", "requirement.txt")
@@ -401,7 +404,6 @@ func main() {
 		NodeDeps:   nodeDeps,
 		PythonDeps: pythonDeps,
 	}
-
 	if err := generateHTMLReport(reportData); err != nil {
 		fmt.Println("Error generating report:", err)
 		os.Exit(1)
