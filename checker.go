@@ -64,16 +64,6 @@ func parseVariables(content string) map[string]string {
 	return varMap
 }
 
-func countCopyleft(flatDeps []FlatDep) int {
-	count := 0
-	for _, dep := range flatDeps {
-		if isCopyleft(dep.License) {
-			count++
-		}
-	}
-	return count
-}
-
 // --------------------- Node.js Dependency Resolution ---------------------
 
 type NodeDependency struct {
@@ -391,8 +381,7 @@ func flattenPythonDependencies(pds []*PythonDependency, parent string) []FlatDep
 
 // --------------------- JSON for Graph Visualization ---------------------
 
-func dependencyTreeJSON(nodeDeps []*NodeDependency, pythonDeps []*PythonDependency) (string, string, error) {
-	// Wrap the dependency arrays in dummy roots so the graph renders properly.
+func dependencyTreeJSONFinal(nodeDeps []*NodeDependency, pythonDeps []*PythonDependency) (string, string, error) {
 	dummyNode := map[string]interface{}{
 		"Name":       "Node.js Dependencies",
 		"Version":    "",
@@ -435,7 +424,7 @@ var reportTemplate = `
         table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
         th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
         th { background-color: #f2f2f2; }
-        .copyleft { background-color: #ffcccc; color: #a10000; }
+        .copyleft { background-color: #f8d7da; color: #721c24; }
         .non-copyleft { background-color: #d4edda; color: #155724; }
         .unknown { background-color: #fff3cd; color: #856404; }
     </style>
@@ -498,10 +487,10 @@ var reportTemplate = `
           .enter().append("path")
             .attr("class", "link")
             .attr("d", function(d) {
-                return "M" + d.y + "," + d.x
-                    + "C" + (d.parent.y + 50) + "," + d.x
-                    + " " + (d.parent.y + 50) + "," + d.parent.x
-                    + " " + d.parent.y + "," + d.parent.x;
+                return "M" + d.y + "," + d.x +
+                    "C" + (d.parent.y + 50) + "," + d.x +
+                    " " + (d.parent.y + 50) + "," + d.parent.x +
+                    " " + d.parent.y + "," + d.parent.x;
             })
             .attr("fill", "none")
             .attr("stroke", "#ccc");
@@ -551,8 +540,9 @@ func generateHTMLReport(data ReportTemplateData) error {
 	return tmpl.Execute(f, data)
 }
 
-// --------------------- Flatten Dependencies ---------------------
+// --------------------- Main Flattening Functions ---------------------
 
+// Define FlatDep only once.
 type FlatDep struct {
 	Name     string
 	Version  string
@@ -600,7 +590,7 @@ func flattenPythonDependencies(pds []*PythonDependency, parent string) []FlatDep
 	return flats
 }
 
-// --------------------- JSON for Graph Visualization ---------------------
+// --------------------- JSON for Graph Visualization (Final) ---------------------
 
 func dependencyTreeJSONFinal(nodeDeps []*NodeDependency, pythonDeps []*PythonDependency) (string, string, error) {
 	dummyNode := map[string]interface{}{
@@ -622,46 +612,6 @@ func dependencyTreeJSONFinal(nodeDeps []*NodeDependency, pythonDeps []*PythonDep
 		return "", "", err
 	}
 	return string(nodeJSONBytes), string(pythonJSONBytes), nil
-}
-
-// --------------------- Copyleft Summary ---------------------
-
-func hasCopyleftTransitiveNodeFinal(dep *NodeDependency) bool {
-	for _, t := range dep.Transitive {
-		if t.Copyleft || hasCopyleftTransitiveNodeFinal(t) {
-			return true
-		}
-	}
-	return false
-}
-
-func countCopyleftTransitivesNodeFinal(deps []*NodeDependency) int {
-	count := 0
-	for _, d := range deps {
-		if hasCopyleftTransitiveNodeFinal(d) {
-			count++
-		}
-	}
-	return count
-}
-
-func hasCopyleftTransitivePythonFinal(dep *PythonDependency) bool {
-	for _, t := range dep.Transitive {
-		if t.Copyleft || hasCopyleftTransitivePythonFinal(t) {
-			return true
-		}
-	}
-	return false
-}
-
-func countCopyleftTransitivesPythonFinal(deps []*PythonDependency) int {
-	count := 0
-	for _, d := range deps {
-		if hasCopyleftTransitivePythonFinal(d) {
-			count++
-		}
-	}
-	return count
 }
 
 // --------------------- Main Report Generation and Main ---------------------
@@ -699,12 +649,15 @@ func main() {
 	flatPython := flattenPythonDependencies(pythonDeps, "Direct")
 	flatDeps := append(flatNode, flatPython...)
 
-	// Create summary information.
-	directNodeCount := len(nodeDeps)
-	directPythonCount := len(pythonDeps)
-	totalCopyleft := countCopyleft(flatDeps)
-	summary := fmt.Sprintf("%d direct Node.js dependencies, %d direct Python dependencies. Total dependencies with copyleft: %d.",
-		directNodeCount, directPythonCount, totalCopyleft)
+	// Create summary information including total copyleft count.
+	totalCopyleft := 0
+	for _, dep := range flatDeps {
+		if isCopyleft(dep.License) {
+			totalCopyleft++
+		}
+	}
+	summary := fmt.Sprintf("%d direct Node.js dependencies, %d direct Python dependencies. Total copyleft dependencies: %d.",
+		len(nodeDeps), len(pythonDeps), totalCopyleft)
 
 	// Generate JSON for graph visualization.
 	nodeJSON, pythonJSON, err := dependencyTreeJSONFinal(nodeDeps, pythonDeps)
