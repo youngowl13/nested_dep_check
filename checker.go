@@ -9,10 +9,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"io/fs"
-	"regexp"
 )
 
 // --------------------- Helper Functions ---------------------
@@ -38,7 +38,7 @@ func isCopyleft(license string) bool {
 	return false
 }
 
-// isCopyleftLicense is simply an alias for isCopyleft.
+// isCopyleftLicense is an alias for isCopyleft.
 func isCopyleftLicense(license string) bool {
 	return isCopyleft(license)
 }
@@ -64,8 +64,7 @@ func findFile(root, target string) string {
 	return found
 }
 
-// parseVariables scans file content for variable definitions, e.g.:
-//   def cameraxVersion = "1.1.0-alpha05"
+// parseVariables scans file content for variable definitions (e.g. def cameraxVersion = "1.1.0-alpha05").
 func parseVariables(content string) map[string]string {
 	varMap := make(map[string]string)
 	re := regexp.MustCompile(`(?m)^\s*def\s+(\w+)\s*=\s*["']([^"']+)["']`)
@@ -105,7 +104,6 @@ func resolveNodeDependency(pkgName, version string, visited map[string]bool) (*N
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		return nil, err
 	}
-
 	ver := version
 	if ver == "" {
 		if dt, ok := data["dist-tags"].(map[string]interface{}); ok {
@@ -120,16 +118,19 @@ func resolveNodeDependency(pkgName, version string, visited map[string]bool) (*N
 	}
 	versionData, ok := versions[ver].(map[string]interface{})
 	if !ok {
-		// fallback to latest
 		if dt, ok := data["dist-tags"].(map[string]interface{}); ok {
 			if latest, ok := dt["latest"].(string); ok {
 				versionData, ok = versions[latest].(map[string]interface{})
 				if ok {
 					ver = latest
 				} else {
-					return nil, fmt.Errorf("version data not found for %s", pkgName)
+					return nil, fmt.Errorf("version %s and latest not found for %s", ver, pkgName)
 				}
+			} else {
+				return nil, fmt.Errorf("version %s and latest not found for %s", ver, pkgName)
 			}
+		} else {
+			return nil, fmt.Errorf("version %s and latest not found for %s", ver, pkgName)
 		}
 	}
 	lic := "Unknown"
@@ -143,12 +144,13 @@ func resolveNodeDependency(pkgName, version string, visited map[string]bool) (*N
 	details := fmt.Sprintf("https://www.npmjs.com/package/%s", pkgName)
 	var trans []*NodeDependency
 	if deps, ok := versionData["dependencies"].(map[string]interface{}); ok {
-		for dep, depVer := range deps {
-			dv, ok := depVer.(string)
+		for dep, depVerRange := range deps {
+			depVer, ok := depVerRange.(string)
 			if !ok {
-				dv = ""
+				log.Printf("Warning: invalid version for dependency %s of %s, skipping", dep, pkgName)
+				continue
 			}
-			tdep, err := resolveNodeDependency(dep, dv, visited)
+			tdep, err := resolveNodeDependency(dep, depVer, visited)
 			if err != nil {
 				log.Printf("Error resolving transitive dependency %s of %s: %v", dep, pkgName, err)
 				continue
@@ -264,7 +266,7 @@ func resolvePythonDependency(pkgName, version string, visited map[string]bool) (
 
 	details := url
 
-	// For simplicity, we won't recursively resolve Python transitive dependencies in full here.
+	// For simplicity, transitive resolution for Python is not implemented in full.
 	return &PythonDependency{
 		Name:       pkgName,
 		Version:    ver,
@@ -383,7 +385,11 @@ var reportTemplate = `
     <h1>Dependency License Report</h1>
     {{range .}}
         <h2>{{.Language}} Dependencies</h2>
-        {{template "depList" .}}
+        {{if .Transitive}}
+            {{template "depList" .}}
+        {{else}}
+            <p>No dependencies found.</p>
+        {{end}}
     {{end}}
 </body>
 </html>
@@ -404,23 +410,7 @@ var reportTemplate = `
 {{end}}
 `
 
-func generateHTMLReport(allDeps []Dependency) error {
-	// Group dependencies by language.
-	groupedDeps := make(map[string][]Dependency)
-	for _, dep := range allDeps {
-		groupedDeps[dep.Language] = append(groupedDeps[dep.Language], dep)
-	}
-	// Convert map to slice for the template.
-	var groupedDepsSlice []Dependency
-	for lang, deps := range groupedDeps {
-		if len(deps) > 0 {
-			groupedDepsSlice = append(groupedDepsSlice, Dependency{
-				Language:   strings.Title(lang),
-				Transitive: deps,
-			})
-		}
-	}
-
+func generateHTMLReport(data ReportData) error {
 	tmpl, err := template.New("report").Parse(reportTemplate)
 	if err != nil {
 		return err
@@ -431,34 +421,43 @@ func generateHTMLReport(allDeps []Dependency) error {
 		return err
 	}
 	defer f.Close()
-	return tmpl.Execute(f, groupedDepsSlice)
+	return tmpl.Execute(f, data)
 }
 
 // --------------------- Main ---------------------
 
 func main() {
-	// For demonstration, we resolve one Node.js and one Python dependency.
-	// In a full implementation, you'd scan your project directory.
-	nodeDep, err := resolveNodeDependency("express", "4.17.1", make(map[string]bool))
-	if err != nil {
-		log.Println("Error resolving Node.js dependency:", err)
-	}
-	pythonDep, err := resolvePythonDependency("requests", "2.26.0", make(map[string]bool))
-	if err != nil {
-		log.Println("Error resolving Python dependency:", err)
-	}
-
-	var allDeps []Dependency
-	if nodeDep != nil {
-		nodeDep.Language = "node"
-		allDeps = append(allDeps, *nodeDep)
-	}
-	if pythonDep != nil {
-		pythonDep.Language = "python"
-		allDeps = append(allDeps, *pythonDep)
+	nodeFile := findFile(".", "package.json")
+	var nodeDeps []*NodeDependency
+	if nodeFile != "" {
+		nd, err := parseNodeDependencies(nodeFile)
+		if err != nil {
+			log.Println("Error parsing Node.js dependencies:", err)
+		} else {
+			nodeDeps = nd
+		}
 	}
 
-	if err := generateHTMLReport(allDeps); err != nil {
+	pythonFile := findFile(".", "requirements.txt")
+	if pythonFile == "" {
+		pythonFile = findFile(".", "requirement.txt")
+	}
+	var pythonDeps []*PythonDependency
+	if pythonFile != "" {
+		pd, err := parsePythonDependencies(pythonFile)
+		if err != nil {
+			log.Println("Error parsing Python dependencies:", err)
+		} else {
+			pythonDeps = pd
+		}
+	}
+
+	reportData := ReportData{
+		NodeDeps:   nodeDeps,
+		PythonDeps: pythonDeps,
+	}
+
+	if err := generateHTMLReport(reportData); err != nil {
 		log.Println("Error generating report:", err)
 		os.Exit(1)
 	}
