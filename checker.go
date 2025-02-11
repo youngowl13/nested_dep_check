@@ -114,7 +114,6 @@ func resolveNodeDependency(pkgName, version string, visited map[string]bool) (*N
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		return nil, err
 	}
-
 	ver := version
 	if ver == "" {
 		if dt, ok := data["dist-tags"].(map[string]interface{}); ok {
@@ -562,6 +561,17 @@ func dependencyTreeJSON(nodeDeps []*NodeDependency, pythonDeps []*PythonDependen
 	return string(nodeJSONBytes), string(pythonJSONBytes), nil
 }
 
+// --------------------- Flatten Dependencies ---------------------
+
+type FlatDep struct {
+	Name     string
+	Version  string
+	License  string
+	Details  string
+	Language string
+	Parent   string
+}
+
 func flattenNodeDeps(nds []*NodeDependency, parent string) []FlatDep {
 	var flats []FlatDep
 	for _, nd := range nds {
@@ -602,14 +612,7 @@ func flattenPythonDeps(pds []*PythonDependency, parent string) []FlatDep {
 	return flats
 }
 
-type FlatDep struct {
-	Name     string
-	Version  string
-	License  string
-	Details  string
-	Language string
-	Parent   string
-}
+// --------------------- Report Template Data ---------------------
 
 type ReportTemplateData struct {
 	Summary         string
@@ -617,6 +620,8 @@ type ReportTemplateData struct {
 	NodeTreeJSON    template.JS
 	PythonTreeJSON  template.JS
 }
+
+// --------------------- Main HTML Report Generation ---------------------
 
 func generateHTMLReport(data ReportTemplateData) error {
 	tmpl, err := template.New("report").Parse(reportTemplate)
@@ -662,7 +667,7 @@ func main() {
 		}
 	}
 
-	// Flatten dependencies for table.
+	// Flatten dependencies for the table.
 	flatNode := flattenNodeDeps(nodeDeps, "Direct")
 	flatPython := flattenPythonDeps(pythonDeps, "Direct")
 	flatDeps := append(flatNode, flatPython...)
