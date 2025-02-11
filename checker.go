@@ -6,6 +6,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"html/template"
+	"io/fs"
 	"io/ioutil"
 	"net/http"
 	"os"
@@ -15,11 +16,10 @@ import (
 	"sync"
 )
 
-// ------------------- Helper Functions -------------------
+// --------------------- Helper Functions ---------------------
 
-// isCopyleft returns true if the provided license string contains a copyleft keyword.
+// isCopyleft returns true if the license string contains any copyleft keywords.
 func isCopyleft(license string) bool {
-	// Expanded list of copyleft license keywords.
 	copyleftLicenses := []string{
 		"GPL",
 		"GNU GENERAL PUBLIC LICENSE",
@@ -39,6 +39,8 @@ func isCopyleft(license string) bool {
 		"COMMON PUBLIC LICENSE",
 		"OSL",
 		"OPEN SOFTWARE LICENSE",
+		"APL",
+		"ACADEMIC PUBLIC LICENSE",
 	}
 	license = strings.ToUpper(license)
 	for _, kw := range copyleftLicenses {
@@ -54,14 +56,46 @@ func isCopyleftLicense(license string) bool {
 	return isCopyleft(license)
 }
 
-// ------------------- Node.js Dependency Resolution -------------------
+// ToUpper converts a string to uppercase.
+func ToUpper(s string) string {
+	return strings.ToUpper(s)
+}
+
+// findFile searches for the given target file starting at root.
+func findFile(root, target string) string {
+	var found string
+	filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.Name() == target {
+			found = path
+			return filepath.SkipDir
+		}
+		return nil
+	})
+	return found
+}
+
+// parseVariables scans the file content for variable definitions (e.g. def cameraxVersion = "1.1.0-alpha05").
+func parseVariables(content string) map[string]string {
+	varMap := make(map[string]string)
+	re := regexp.MustCompile(`(?m)^\s*def\s+(\w+)\s*=\s*["']([^"']+)["']`)
+	matches := re.FindAllStringSubmatch(content, -1)
+	for _, match := range matches {
+		varMap[match[1]] = match[2]
+	}
+	return varMap
+}
+
+// --------------------- Node.js Dependency Resolution ---------------------
 
 type NodeDependency struct {
-	Name       string           `json:"name"`
-	Version    string           `json:"version"`
-	License    string           `json:"license"`
-	Details    string           `json:"details"`
-	Copyleft   bool             `json:"copyleft"`
+	Name       string            `json:"name"`
+	Version    string            `json:"version"`
+	License    string            `json:"license"`
+	Details    string            `json:"details"`
+	Copyleft   bool              `json:"copyleft"`
 	Transitive []*NodeDependency `json:"transitive,omitempty"`
 }
 
@@ -82,7 +116,6 @@ func resolveNodeDependency(pkgName, version string, visited map[string]bool) (*N
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		return nil, err
 	}
-	// Determine version to use.
 	ver := version
 	if ver == "" {
 		if dt, ok := data["dist-tags"].(map[string]interface{}); ok {
@@ -157,7 +190,7 @@ func parseNodeDependencies(filePath string) ([]*NodeDependency, error) {
 	return results, nil
 }
 
-// ------------------- Python Dependency Resolution -------------------
+// --------------------- Python Dependency Resolution ---------------------
 
 type PythonDependency struct {
 	Name       string              `json:"name"`
@@ -249,7 +282,7 @@ func parsePythonDependencies(filePath string) ([]*PythonDependency, error) {
 	return results, nil
 }
 
-// ------------------- HTML Report Generation -------------------
+// --------------------- HTML Report Generation ---------------------
 
 type ReportData struct {
 	NodeDeps   []*NodeDependency
@@ -286,7 +319,7 @@ var reportTemplate = `
 {{range .}}
     <li>
         <strong>{{.Name}}@{{.Version}}</strong> - License: 
-        {{if eq (upper .License) "UNKNOWN"}}<span class="unknown">Unknown</span>{{else if isCopyleft .License}}<span class="copyleft">{{.License}}</span>{{else}}<span class="non-copyleft">{{.License}}</span>{{end}}
+        {{if eq (ToUpper .License) "UNKNOWN"}}<span class="unknown">Unknown</span>{{else if isCopyleft .License}}<span class="copyleft">{{.License}}</span>{{else}}<span class="non-copyleft">{{.License}}</span>{{end}}
         [<a href="https://www.npmjs.com/package/{{.Name}}" target="_blank">Details</a>]
         {{if .Transitive}}
             {{template "nodeList" .Transitive}}
@@ -301,7 +334,7 @@ var reportTemplate = `
 {{range .}}
     <li>
         <strong>{{.Name}}@{{.Version}}</strong> - License: 
-        {{if eq (upper .License) "UNKNOWN"}}<span class="unknown">Unknown</span>{{else if isCopyleft .License}}<span class="copyleft">{{.License}}</span>{{else}}<span class="non-copyleft">{{.License}}</span>{{end}}
+        {{if eq (ToUpper .License) "UNKNOWN"}}<span class="unknown">Unknown</span>{{else if isCopyleft .License}}<span class="copyleft">{{.License}}</span>{{else}}<span class="non-copyleft">{{.License}}</span>{{end}}
         [<a href="{{.Details}}" target="_blank">Details</a>]
         {{if .Transitive}}
             {{template "pythonList" .Transitive}}
@@ -310,24 +343,31 @@ var reportTemplate = `
 {{end}}
 </ul>
 {{end}}
-
-{{define "upper"}}{{. | ToUpper}}{{end}}
 `
 
-// ToUpper is a helper that converts a string to upper-case.
-func ToUpper(s string) string {
-	return strings.ToUpper(s)
+func generateHTMLReport(data ReportData) error {
+	tmpl, err := template.New("report").Funcs(template.FuncMap{
+		"ToUpper":          ToUpper,
+		"isCopyleft":       isCopyleft,
+		"isCopyleftLicense": isCopyleftLicense,
+	}).Parse(reportTemplate)
+	if err != nil {
+		return fmt.Errorf("error parsing template: %v", err)
+	}
+	reportFile := "dependency-license-report.html"
+	f, err := os.Create(reportFile)
+	if err != nil {
+		return fmt.Errorf("error creating report file: %v", err)
+	}
+	defer f.Close()
+	if err := tmpl.Execute(f, data); err != nil {
+		return fmt.Errorf("error executing template: %v", err)
+	}
+	fmt.Println("Dependency license report generated:", reportFile)
+	return nil
 }
 
-// ------------------- Template FuncMap -------------------
-
-var funcMap = template.FuncMap{
-	"ToUpper":     ToUpper,
-	"isCopyleft":  isCopyleft,
-	"isCopyleftLicense": isCopyleftLicense,
-}
-
-// ------------------- Main -------------------
+// --------------------- Main ---------------------
 
 func main() {
 	// Locate Node.js package.json.
@@ -362,26 +402,14 @@ func main() {
 		PythonDeps: pythonDeps,
 	}
 
-	tmpl, err := template.New("report").Funcs(funcMap).Parse(reportTemplate)
-	if err != nil {
-		fmt.Println("Error parsing template:", err)
+	if err := generateHTMLReport(reportData); err != nil {
+		fmt.Println("Error generating report:", err)
 		os.Exit(1)
 	}
-	reportFile := "dependency-license-report.html"
-	f, err := os.Create(reportFile)
-	if err != nil {
-		fmt.Println("Error creating report file:", err)
-		os.Exit(1)
-	}
-	defer f.Close()
-	if err := tmpl.Execute(f, reportData); err != nil {
-		fmt.Println("Error executing template:", err)
-		os.Exit(1)
-	}
-	fmt.Println("Dependency license report generated:", reportFile)
 }
 
-// findFile searches for the given target file starting at root.
+// --------------------- findFile helper ---------------------
+
 func findFile(root, target string) string {
 	var found string
 	filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
