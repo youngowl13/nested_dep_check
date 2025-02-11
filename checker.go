@@ -39,8 +39,6 @@ func isCopyleft(license string) bool {
 		"COMMON PUBLIC LICENSE",
 		"OSL",
 		"OPEN SOFTWARE LICENSE",
-		"APL",
-		"ACADEMIC PUBLIC LICENSE",
 	}
 	license = strings.ToUpper(license)
 	for _, kw := range copyleftLicenses {
@@ -77,7 +75,7 @@ func findFile(root, target string) string {
 	return found
 }
 
-// parseVariables scans the file content for variable definitions (e.g. def cameraxVersion = "1.1.0-alpha05").
+// parseVariables scans the file content for variable definitions.
 func parseVariables(content string) map[string]string {
 	varMap := make(map[string]string)
 	re := regexp.MustCompile(`(?m)^\s*def\s+(\w+)\s*=\s*["']([^"']+)["']`)
@@ -343,12 +341,14 @@ var reportTemplate = `
 {{end}}
 </ul>
 {{end}}
+
+{{define "ToUpper"}}{{. | ToUpper}}{{end}}
 `
 
 func generateHTMLReport(data ReportData) error {
 	tmpl, err := template.New("report").Funcs(template.FuncMap{
-		"ToUpper":          ToUpper,
-		"isCopyleft":       isCopyleft,
+		"ToUpper":           ToUpper,
+		"isCopyleft":        isCopyleft,
 		"isCopyleftLicense": isCopyleftLicense,
 	}).Parse(reportTemplate)
 	if err != nil {
@@ -406,21 +406,4 @@ func main() {
 		fmt.Println("Error generating report:", err)
 		os.Exit(1)
 	}
-}
-
-// --------------------- findFile helper ---------------------
-
-func findFile(root, target string) string {
-	var found string
-	filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if d.Name() == target {
-			found = path
-			return filepath.SkipDir
-		}
-		return nil
-	})
-	return found
 }
