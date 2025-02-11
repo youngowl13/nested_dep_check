@@ -17,7 +17,6 @@ import (
 
 // --------------------- Helper Functions ---------------------
 
-// isCopyleft returns true if the license string contains any copyleft keywords.
 func isCopyleft(license string) bool {
 	copyleftLicenses := []string{
 		"GPL",
@@ -48,17 +47,14 @@ func isCopyleft(license string) bool {
 	return false
 }
 
-// isCopyleftLicense is an alias for isCopyleft.
 func isCopyleftLicense(license string) bool {
 	return isCopyleft(license)
 }
 
-// ToUpper converts a string to uppercase.
 func ToUpper(s string) string {
 	return strings.ToUpper(s)
 }
 
-// findFile searches for the given target file starting at root.
 func findFile(root, target string) string {
 	var found string
 	filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -74,7 +70,6 @@ func findFile(root, target string) string {
 	return found
 }
 
-// parseVariables scans file content for variable definitions.
 func parseVariables(content string) map[string]string {
 	varMap := make(map[string]string)
 	re := regexp.MustCompile(`(?m)^\s*def\s+(\w+)\s*=\s*["']([^"']+)["']`)
@@ -100,7 +95,7 @@ type NodeDependency struct {
 func resolveNodeDependency(pkgName, version string, visited map[string]bool) (*NodeDependency, error) {
 	key := pkgName + "@" + version
 	if visited[key] {
-		return nil, nil // cycle detected
+		return nil, nil
 	}
 	visited[key] = true
 
@@ -222,7 +217,7 @@ type PythonDependency struct {
 func resolvePythonDependency(pkgName, version string, visited map[string]bool) (*PythonDependency, error) {
 	key := pkgName + "@" + version
 	if visited[key] {
-		return nil, nil // cycle detected
+		return nil, nil
 	}
 	visited[key] = true
 	url := fmt.Sprintf("https://pypi.org/pypi/%s/json", pkgName)
@@ -270,7 +265,6 @@ func resolvePythonDependency(pkgName, version string, visited map[string]bool) (
 	if l, ok := info["license"].(string); ok {
 		lic = l
 	}
-
 	details := url
 
 	// For simplicity, transitive resolution for Python is not fully implemented.
@@ -418,7 +412,6 @@ func flattenPythonDeps(pds []*PythonDependency, parent string) []FlatDep {
 // --------------------- JSON for Graph Visualization ---------------------
 
 func dependencyTreeJSON(nodeDeps []*NodeDependency, pythonDeps []*PythonDependency) (string, string, error) {
-	// Wrap each dependency array in a dummy root so that D3.js has a single root.
 	dummyNode := map[string]interface{}{
 		"Name":       "Node.js Dependencies",
 		"Version":    "",
@@ -603,27 +596,20 @@ var reportTemplate = `
 </html>
 `
 
-func dependencyTreeJSON(nodeDeps []*NodeDependency, pythonDeps []*PythonDependency) (string, string, error) {
-	// Wrap each dependency array in a dummy root so that D3.js has a single root.
-	dummyNode := map[string]interface{}{
-		"Name":       "Node.js Dependencies",
-		"Version":    "",
-		"Transitive": nodeDeps,
-	}
-	dummyPython := map[string]interface{}{
-		"Name":       "Python Dependencies",
-		"Version":    "",
-		"Transitive": pythonDeps,
-	}
-	nodeJSONBytes, err := json.MarshalIndent(dummyNode, "", "  ")
+func generateHTMLReport(data ReportTemplateData) error {
+	tmpl, err := template.New("report").Funcs(template.FuncMap{
+		"isCopyleft": isCopyleft,
+	}).Parse(reportTemplate)
 	if err != nil {
-		return "", "", err
+		return err
 	}
-	pythonJSONBytes, err := json.MarshalIndent(dummyPython, "", "  ")
+	reportFile := "dependency-license-report.html"
+	f, err := os.Create(reportFile)
 	if err != nil {
-		return "", "", err
+		return err
 	}
-	return string(nodeJSONBytes), string(pythonJSONBytes), nil
+	defer f.Close()
+	return tmpl.Execute(f, data)
 }
 
 // --------------------- Main Flattening ---------------------
@@ -677,71 +663,6 @@ func flattenPythonDeps(pds []*PythonDependency, parent string) []FlatDep {
 	return flats
 }
 
-// --------------------- Copyleft Summary ---------------------
-
-func hasCopyleftTransitiveNode(dep *NodeDependency) bool {
-	for _, t := range dep.Transitive {
-		if t.Copyleft || hasCopyleftTransitiveNode(t) {
-			return true
-		}
-	}
-	return false
-}
-
-func countCopyleftTransitivesNode(deps []*NodeDependency) int {
-	count := 0
-	for _, d := range deps {
-		if hasCopyleftTransitiveNode(d) {
-			count++
-		}
-	}
-	return count
-}
-
-func hasCopyleftTransitivePython(dep *PythonDependency) bool {
-	for _, t := range dep.Transitive {
-		if t.Copyleft || hasCopyleftTransitivePython(t) {
-			return true
-		}
-	}
-	return false
-}
-
-func countCopyleftTransitivesPython(deps []*PythonDependency) int {
-	count := 0
-	for _, d := range deps {
-		if hasCopyleftTransitivePython(d) {
-			count++
-		}
-	}
-	return count
-}
-
-// --------------------- Report Template Data and HTML Report Generation ---------------------
-
-type ReportTemplateData struct {
-	Summary         string
-	FlatDeps        []FlatDep
-	NodeTreeJSON    template.JS
-	PythonTreeJSON  template.JS
-}
-
-func generateHTMLReport(data ReportTemplateData) error {
-	tmpl, err := template.New("report").Funcs(template.FuncMap{
-		"isCopyleft": isCopyleft,
-	}).Parse(reportTemplate)
-	if err != nil {
-		return err
-	}
-	reportFile := "dependency-license-report.html"
-	f, err := os.Create(reportFile)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	return tmpl.Execute(f, data)
-}
-
 // --------------------- Main ---------------------
 
 func main() {
@@ -772,7 +693,7 @@ func main() {
 		}
 	}
 
-	// Flatten dependencies for the table.
+	// Flatten dependencies for table.
 	flatNode := flattenNodeDeps(nodeDeps, "Direct")
 	flatPython := flattenPythonDeps(pythonDeps, "Direct")
 	flatDeps := append(flatNode, flatPython...)
