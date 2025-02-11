@@ -20,24 +20,10 @@ import (
 
 func isCopyleft(license string) bool {
 	copyleftLicenses := []string{
-		"GPL",
-		"GNU GENERAL PUBLIC LICENSE",
-		"LGPL",
-		"GNU LESSER GENERAL PUBLIC LICENSE",
-		"AGPL",
-		"GNU AFFERO GENERAL PUBLIC LICENSE",
-		"MPL",
-		"MOZILLA PUBLIC LICENSE",
-		"CC-BY-SA",
-		"CREATIVE COMMONS ATTRIBUTION-SHAREALIKE",
-		"EPL",
-		"ECLIPSE PUBLIC LICENSE",
-		"OFL",
-		"OPEN FONT LICENSE",
-		"CPL",
-		"COMMON PUBLIC LICENSE",
-		"OSL",
-		"OPEN SOFTWARE LICENSE",
+		"GPL", "GNU GENERAL PUBLIC LICENSE", "LGPL", "GNU LESSER GENERAL PUBLIC LICENSE",
+		"AGPL", "GNU AFFERO GENERAL PUBLIC LICENSE", "MPL", "MOZILLA PUBLIC LICENSE",
+		"CC-BY-SA", "CREATIVE COMMONS ATTRIBUTION-SHAREALIKE", "EPL", "ECLIPSE PUBLIC LICENSE",
+		"OFL", "OPEN FONT LICENSE", "CPL", "COMMON PUBLIC LICENSE", "OSL", "OPEN SOFTWARE LICENSE",
 	}
 	license = strings.ToUpper(license)
 	for _, kw := range copyleftLicenses {
@@ -50,10 +36,6 @@ func isCopyleft(license string) bool {
 
 func isCopyleftLicense(license string) bool {
 	return isCopyleft(license)
-}
-
-func ToUpper(s string) string {
-	return strings.ToUpper(s)
 }
 
 func findFile(root, target string) string {
@@ -106,12 +88,10 @@ func resolveNodeDependency(pkgName, version string, visited map[string]bool) (*N
 		return nil, err
 	}
 	defer resp.Body.Close()
-
 	var data map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		return nil, err
 	}
-
 	ver := version
 	if ver == "" {
 		if dt, ok := data["dist-tags"].(map[string]interface{}); ok {
@@ -358,7 +338,7 @@ type FlatDep struct {
 	Parent   string
 }
 
-func flattenNodeDeps(nds []*NodeDependency, parent string) []FlatDep {
+func flattenNodeDependencies(nds []*NodeDependency, parent string) []FlatDep {
 	var flats []FlatDep
 	for _, nd := range nds {
 		flat := FlatDep{
@@ -371,14 +351,14 @@ func flattenNodeDeps(nds []*NodeDependency, parent string) []FlatDep {
 		}
 		flats = append(flats, flat)
 		if len(nd.Transitive) > 0 {
-			trans := flattenNodeDeps(nd.Transitive, nd.Name)
+			trans := flattenNodeDependencies(nd.Transitive, nd.Name)
 			flats = append(flats, trans...)
 		}
 	}
 	return flats
 }
 
-func flattenPythonDeps(pds []*PythonDependency, parent string) []FlatDep {
+func flattenPythonDependencies(pds []*PythonDependency, parent string) []FlatDep {
 	var flats []FlatDep
 	for _, pd := range pds {
 		flat := FlatDep{
@@ -391,7 +371,7 @@ func flattenPythonDeps(pds []*PythonDependency, parent string) []FlatDep {
 		}
 		flats = append(flats, flat)
 		if len(pd.Transitive) > 0 {
-			trans := flattenPythonDeps(pd.Transitive, pd.Name)
+			trans := flattenPythonDependencies(pd.Transitive, pd.Name)
 			flats = append(flats, trans...)
 		}
 	}
@@ -601,18 +581,9 @@ func generateHTMLReport(data ReportTemplateData) error {
 	return tmpl.Execute(f, data)
 }
 
-// --------------------- Main Flattening ---------------------
+// --------------------- Main Flattening Functions ---------------------
 
-type FlatDep struct {
-	Name     string
-	Version  string
-	License  string
-	Details  string
-	Language string
-	Parent   string
-}
-
-func flattenNodeDeps(nds []*NodeDependency, parent string) []FlatDep {
+func flattenNodeDependencies(nds []*NodeDependency, parent string) []FlatDep {
 	var flats []FlatDep
 	for _, nd := range nds {
 		flat := FlatDep{
@@ -625,14 +596,14 @@ func flattenNodeDeps(nds []*NodeDependency, parent string) []FlatDep {
 		}
 		flats = append(flats, flat)
 		if len(nd.Transitive) > 0 {
-			trans := flattenNodeDeps(nd.Transitive, nd.Name)
+			trans := flattenNodeDependencies(nd.Transitive, nd.Name)
 			flats = append(flats, trans...)
 		}
 	}
 	return flats
 }
 
-func flattenPythonDeps(pds []*PythonDependency, parent string) []FlatDep {
+func flattenPythonDependencies(pds []*PythonDependency, parent string) []FlatDep {
 	var flats []FlatDep
 	for _, pd := range pds {
 		flat := FlatDep{
@@ -645,7 +616,7 @@ func flattenPythonDeps(pds []*PythonDependency, parent string) []FlatDep {
 		}
 		flats = append(flats, flat)
 		if len(pd.Transitive) > 0 {
-			trans := flattenPythonDeps(pd.Transitive, pd.Name)
+			trans := flattenPythonDependencies(pd.Transitive, pd.Name)
 			flats = append(flats, trans...)
 		}
 	}
@@ -654,7 +625,7 @@ func flattenPythonDeps(pds []*PythonDependency, parent string) []FlatDep {
 
 // --------------------- JSON for Graph Visualization ---------------------
 
-func dependencyTreeJSON(nodeDeps []*NodeDependency, pythonDeps []*PythonDependency) (string, string, error) {
+func dependencyTreeJSONFinal(nodeDeps []*NodeDependency, pythonDeps []*PythonDependency) (string, string, error) {
 	dummyNode := map[string]interface{}{
 		"Name":       "Node.js Dependencies",
 		"Version":    "",
@@ -676,49 +647,49 @@ func dependencyTreeJSON(nodeDeps []*NodeDependency, pythonDeps []*PythonDependen
 	return string(nodeJSONBytes), string(pythonJSONBytes), nil
 }
 
-// --------------------- Copyleft Summary ---------------------
+// --------------------- Copyleft Summary Functions ---------------------
 
-func hasCopyleftTransitiveNode(dep *NodeDependency) bool {
+func hasCopyleftTransitiveNodeFinal(dep *NodeDependency) bool {
 	for _, t := range dep.Transitive {
-		if t.Copyleft || hasCopyleftTransitiveNode(t) {
+		if t.Copyleft || hasCopyleftTransitiveNodeFinal(t) {
 			return true
 		}
 	}
 	return false
 }
 
-func countCopyleftTransitivesNode(deps []*NodeDependency) int {
+func countCopyleftTransitivesNodeFinal(deps []*NodeDependency) int {
 	count := 0
 	for _, d := range deps {
-		if hasCopyleftTransitiveNode(d) {
+		if hasCopyleftTransitiveNodeFinal(d) {
 			count++
 		}
 	}
 	return count
 }
 
-func hasCopyleftTransitivePython(dep *PythonDependency) bool {
+func hasCopyleftTransitivePythonFinal(dep *PythonDependency) bool {
 	for _, t := range dep.Transitive {
-		if t.Copyleft || hasCopyleftTransitivePython(t) {
+		if t.Copyleft || hasCopyleftTransitivePythonFinal(t) {
 			return true
 		}
 	}
 	return false
 }
 
-func countCopyleftTransitivesPython(deps []*PythonDependency) int {
+func countCopyleftTransitivesPythonFinal(deps []*PythonDependency) int {
 	count := 0
 	for _, d := range deps {
-		if hasCopyleftTransitivePython(d) {
+		if hasCopyleftTransitivePythonFinal(d) {
 			count++
 		}
 	}
 	return count
 }
 
-// --------------------- Report Template Data ---------------------
+// --------------------- Report Template Data (Final Declaration) ---------------------
 
-type ReportTemplateData struct {
+type ReportData struct {
 	Summary         string
 	FlatDeps        []FlatDep
 	NodeTreeJSON    template.JS
@@ -756,33 +727,38 @@ func main() {
 	}
 
 	// Flatten dependencies for table.
-	flatNode := flattenNodeDeps(nodeDeps, "Direct")
-	flatPython := flattenPythonDeps(pythonDeps, "Direct")
+	flatNode := flattenNodeDependencies(nodeDeps, "Direct")
+	flatPython := flattenPythonDependencies(pythonDeps, "Direct")
 	flatDeps := append(flatNode, flatPython...)
 
 	// Create summary information.
 	directNodeCount := len(nodeDeps)
 	directPythonCount := len(pythonDeps)
-	nodeCopyleftCount := countCopyleftTransitivesNode(nodeDeps)
-	pythonCopyleftCount := countCopyleftTransitivesPython(pythonDeps)
+	nodeCopyleftCount := countCopyleftTransitivesNodeFinal(nodeDeps)
+	pythonCopyleftCount := countCopyleftTransitivesPythonFinal(pythonDeps)
 	summary := fmt.Sprintf("%d direct Node.js dependencies (%d with transitive copyleft), %d direct Python dependencies (%d with transitive copyleft).",
 		directNodeCount, nodeCopyleftCount, directPythonCount, pythonCopyleftCount)
 
 	// Generate JSON for graph visualization.
-	nodeJSON, pythonJSON, err := dependencyTreeJSON(nodeDeps, pythonDeps)
+	nodeJSON, pythonJSON, err := dependencyTreeJSONFinal(nodeDeps, pythonDeps)
 	if err != nil {
 		log.Println("Error generating JSON for graph:", err)
 		nodeJSON, pythonJSON = "[]", "[]"
 	}
 
-	reportData := ReportTemplateData{
+	report := ReportData{
 		Summary:         summary,
 		FlatDeps:        flatDeps,
 		NodeTreeJSON:    template.JS(nodeJSON),
 		PythonTreeJSON:  template.JS(pythonJSON),
 	}
 
-	if err := generateHTMLReport(reportData); err != nil {
+	if err := generateHTMLReport(ReportTemplateData{
+		Summary:         report.Summary,
+		FlatDeps:        report.FlatDeps,
+		NodeTreeJSON:    report.NodeTreeJSON,
+		PythonTreeJSON:  report.PythonTreeJSON,
+	}); err != nil {
 		log.Println("Error generating report:", err)
 		os.Exit(1)
 	}
