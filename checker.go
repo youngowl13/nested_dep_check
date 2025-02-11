@@ -6,7 +6,6 @@ import (
 	"encoding/xml"
 	"fmt"
 	"html/template"
-	"io/fs"
 	"io/ioutil"
 	"net/http"
 	"os"
@@ -16,15 +15,54 @@ import (
 	"sync"
 )
 
-// -------------------- Node.js Dependency Resolution --------------------
+// ------------------- Helper Functions -------------------
+
+// isCopyleft returns true if the provided license string contains a copyleft keyword.
+func isCopyleft(license string) bool {
+	// Expanded list of copyleft license keywords.
+	copyleftLicenses := []string{
+		"GPL",
+		"GNU GENERAL PUBLIC LICENSE",
+		"LGPL",
+		"GNU LESSER GENERAL PUBLIC LICENSE",
+		"AGPL",
+		"GNU AFFERO GENERAL PUBLIC LICENSE",
+		"MPL",
+		"MOZILLA PUBLIC LICENSE",
+		"CC-BY-SA",
+		"CREATIVE COMMONS ATTRIBUTION-SHAREALIKE",
+		"EPL",
+		"ECLIPSE PUBLIC LICENSE",
+		"OFL",
+		"OPEN FONT LICENSE",
+		"CPL",
+		"COMMON PUBLIC LICENSE",
+		"OSL",
+		"OPEN SOFTWARE LICENSE",
+	}
+	license = strings.ToUpper(license)
+	for _, kw := range copyleftLicenses {
+		if strings.Contains(license, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+// isCopyleftLicense is an alias to isCopyleft.
+func isCopyleftLicense(license string) bool {
+	return isCopyleft(license)
+}
+
+// ------------------- Node.js Dependency Resolution -------------------
 
 type NodeDependency struct {
-	Name       string             `json:"name"`
-	Version    string             `json:"version"`
-	License    string             `json:"license"`
-	Details    string             `json:"details"`
-	Copyleft   bool               `json:"copyleft"`
-	Transitive []*NodeDependency  `json:"transitive,omitempty"`
+	Name       string           `json:"name"`
+	Version    string           `json:"version"`
+	License    string           `json:"license"`
+	Details    string           `json:"details"`
+	Copyleft   bool             `json:"copyleft"`
+	Transitive []*NodeDependency `json:"transitive,omitempty"`
 }
 
 func resolveNodeDependency(pkgName, version string, visited map[string]bool) (*NodeDependency, error) {
@@ -44,11 +82,9 @@ func resolveNodeDependency(pkgName, version string, visited map[string]bool) (*N
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		return nil, err
 	}
-	// Determine the version to use.
-	var ver string
-	if version != "" {
-		ver = version
-	} else {
+	// Determine version to use.
+	ver := version
+	if ver == "" {
 		if dt, ok := data["dist-tags"].(map[string]interface{}); ok {
 			if latest, ok := dt["latest"].(string); ok {
 				ver = latest
@@ -121,15 +157,15 @@ func parseNodeDependencies(filePath string) ([]*NodeDependency, error) {
 	return results, nil
 }
 
-// -------------------- Python Dependency Resolution --------------------
+// ------------------- Python Dependency Resolution -------------------
 
 type PythonDependency struct {
-	Name       string               `json:"name"`
-	Version    string               `json:"version"`
-	License    string               `json:"license"`
-	Details    string               `json:"details"`
-	Copyleft   bool                 `json:"copyleft"`
-	Transitive []*PythonDependency  `json:"transitive,omitempty"`
+	Name       string              `json:"name"`
+	Version    string              `json:"version"`
+	License    string              `json:"license"`
+	Details    string              `json:"details"`
+	Copyleft   bool                `json:"copyleft"`
+	Transitive []*PythonDependency `json:"transitive,omitempty"`
 }
 
 func resolvePythonDependency(pkgName, version string, visited map[string]bool) (*PythonDependency, error) {
@@ -164,7 +200,6 @@ func resolvePythonDependency(pkgName, version string, visited map[string]bool) (
 			if !ok {
 				continue
 			}
-			// Example format: "packageName (>=1.2.3)"
 			parts := strings.Split(reqStr, " ")
 			depName := parts[0]
 			depVer := ""
@@ -214,7 +249,7 @@ func parsePythonDependencies(filePath string) ([]*PythonDependency, error) {
 	return results, nil
 }
 
-// -------------------- HTML Report Generation --------------------
+// ------------------- HTML Report Generation -------------------
 
 type ReportData struct {
 	NodeDeps   []*NodeDependency
@@ -276,14 +311,23 @@ var reportTemplate = `
 </ul>
 {{end}}
 
-{{define "upper"}}{{. | upper}}{{end}}
+{{define "upper"}}{{. | ToUpper}}{{end}}
 `
 
-func upper(s string) string {
+// ToUpper is a helper that converts a string to upper-case.
+func ToUpper(s string) string {
 	return strings.ToUpper(s)
 }
 
-// -------------------- Main --------------------
+// ------------------- Template FuncMap -------------------
+
+var funcMap = template.FuncMap{
+	"ToUpper":     ToUpper,
+	"isCopyleft":  isCopyleft,
+	"isCopyleftLicense": isCopyleftLicense,
+}
+
+// ------------------- Main -------------------
 
 func main() {
 	// Locate Node.js package.json.
@@ -316,11 +360,6 @@ func main() {
 	reportData := ReportData{
 		NodeDeps:   nodeDeps,
 		PythonDeps: pythonDeps,
-	}
-
-	funcMap := template.FuncMap{
-		"upper":     upper,
-		"isCopyleft": isCopyleft,
 	}
 
 	tmpl, err := template.New("report").Funcs(funcMap).Parse(reportTemplate)
