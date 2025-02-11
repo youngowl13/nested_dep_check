@@ -74,7 +74,7 @@ func findFile(root, target string) string {
 	return found
 }
 
-// parseVariables scans file content for variable definitions (e.g., def cameraxVersion = "1.1.0-alpha05").
+// parseVariables scans file content for variable definitions.
 func parseVariables(content string) map[string]string {
 	varMap := make(map[string]string)
 	re := regexp.MustCompile(`(?m)^\s*def\s+(\w+)\s*=\s*["']([^"']+)["']`)
@@ -429,7 +429,7 @@ func dependencyTreeJSON(nodeDeps []*NodeDependency, pythonDeps []*PythonDependen
 	return string(nodeJSONBytes), string(pythonJSONBytes), nil
 }
 
-// --------------------- HTML Report Generation ---------------------
+// --------------------- Report Template Data and HTML Report Generation ---------------------
 
 type ReportTemplateData struct {
 	Summary         string
@@ -549,80 +549,6 @@ var reportTemplate = `
 </body>
 </html>
 `
-
-func dependencyTreeJSON(nodeDeps []*NodeDependency, pythonDeps []*PythonDependency) (string, string, error) {
-	nodeJSONBytes, err := json.MarshalIndent(nodeDeps, "", "  ")
-	if err != nil {
-		return "", "", err
-	}
-	pythonJSONBytes, err := json.MarshalIndent(pythonDeps, "", "  ")
-	if err != nil {
-		return "", "", err
-	}
-	return string(nodeJSONBytes), string(pythonJSONBytes), nil
-}
-
-// --------------------- Main Flattening ---------------------
-
-type FlatDep struct {
-	Name     string
-	Version  string
-	License  string
-	Details  string
-	Language string
-	Parent   string
-}
-
-func flattenNodeDeps(nds []*NodeDependency, parent string) []FlatDep {
-	var flats []FlatDep
-	for _, nd := range nds {
-		flat := FlatDep{
-			Name:     nd.Name,
-			Version:  nd.Version,
-			License:  nd.License,
-			Details:  nd.Details,
-			Language: nd.Language,
-			Parent:   parent,
-		}
-		flats = append(flats, flat)
-		if len(nd.Transitive) > 0 {
-			trans := flattenNodeDeps(nd.Transitive, nd.Name)
-			flats = append(flats, trans...)
-		}
-	}
-	return flats
-}
-
-func flattenPythonDeps(pds []*PythonDependency, parent string) []FlatDep {
-	var flats []FlatDep
-	for _, pd := range pds {
-		flat := FlatDep{
-			Name:     pd.Name,
-			Version:  pd.Version,
-			License:  pd.License,
-			Details:  pd.Details,
-			Language: pd.Language,
-			Parent:   parent,
-		}
-		flats = append(flats, flat)
-		if len(pd.Transitive) > 0 {
-			trans := flattenPythonDeps(pd.Transitive, pd.Name)
-			flats = append(flats, trans...)
-		}
-	}
-	return flats
-}
-
-// --------------------- Report Template Data ---------------------
-
-type ReportTemplateData struct {
-	Summary         string
-	FlatDeps        []FlatDep
-	NodeTreeJSON    template.JS
-	PythonTreeJSON  template.JS
-}
-
-// --------------------- HTML Report Generation ---------------------
 
 func generateHTMLReport(data ReportTemplateData) error {
 	tmpl, err := template.New("report").Parse(reportTemplate)
