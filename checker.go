@@ -48,7 +48,7 @@ func isCopyleft(license string) bool {
 	return false
 }
 
-// isCopyleftLicense is simply an alias for isCopyleft.
+// isCopyleftLicense is an alias for isCopyleft.
 func isCopyleftLicense(license string) bool {
 	return isCopyleft(license)
 }
@@ -273,7 +273,7 @@ func resolvePythonDependency(pkgName, version string, visited map[string]bool) (
 
 	details := url
 
-	// For simplicity, transitive resolution for Python is not implemented fully.
+	// For simplicity, transitive resolution for Python is not fully implemented.
 	return &PythonDependency{
 		Name:     pkgName,
 		Version:  ver,
@@ -364,11 +364,78 @@ func parseRequirements(r io.Reader) ([]requirement, error) {
 	return requirements, nil
 }
 
+// --------------------- Flatten Dependencies ---------------------
+
+type FlatDep struct {
+	Name     string
+	Version  string
+	License  string
+	Details  string
+	Language string
+	Parent   string
+}
+
+func flattenNodeDeps(nds []*NodeDependency, parent string) []FlatDep {
+	var flats []FlatDep
+	for _, nd := range nds {
+		flat := FlatDep{
+			Name:     nd.Name,
+			Version:  nd.Version,
+			License:  nd.License,
+			Details:  nd.Details,
+			Language: nd.Language,
+			Parent:   parent,
+		}
+		flats = append(flats, flat)
+		if len(nd.Transitive) > 0 {
+			trans := flattenNodeDeps(nd.Transitive, nd.Name)
+			flats = append(flats, trans...)
+		}
+	}
+	return flats
+}
+
+func flattenPythonDeps(pds []*PythonDependency, parent string) []FlatDep {
+	var flats []FlatDep
+	for _, pd := range pds {
+		flat := FlatDep{
+			Name:     pd.Name,
+			Version:  pd.Version,
+			License:  pd.License,
+			Details:  pd.Details,
+			Language: pd.Language,
+			Parent:   parent,
+		}
+		flats = append(flats, flat)
+		if len(pd.Transitive) > 0 {
+			trans := flattenPythonDeps(pd.Transitive, pd.Name)
+			flats = append(flats, trans...)
+		}
+	}
+	return flats
+}
+
+// --------------------- JSON for Graph Visualization ---------------------
+
+func dependencyTreeJSON(nodeDeps []*NodeDependency, pythonDeps []*PythonDependency) (string, string, error) {
+	nodeJSONBytes, err := json.MarshalIndent(nodeDeps, "", "  ")
+	if err != nil {
+		return "", "", err
+	}
+	pythonJSONBytes, err := json.MarshalIndent(pythonDeps, "", "  ")
+	if err != nil {
+		return "", "", err
+	}
+	return string(nodeJSONBytes), string(pythonJSONBytes), nil
+}
+
 // --------------------- HTML Report Generation ---------------------
 
-type ReportData struct {
-	NodeDeps   []*NodeDependency
-	PythonDeps []*PythonDependency
+type ReportTemplateData struct {
+	Summary         string
+	FlatDeps        []FlatDep
+	NodeTreeJSON    template.JS
+	PythonTreeJSON  template.JS
 }
 
 var reportTemplate = `
@@ -379,61 +446,111 @@ var reportTemplate = `
     <title>Dependency License Report</title>
     <style>
         body { font-family: Arial, sans-serif; margin: 20px; }
-        h1 { color: #2c3e50; }
-        ul { list-style-type: none; padding-left: 20px; }
-        li { margin: 4px 0; border-left: 3px solid #ddd; padding-left: 10px; }
-        .copyleft { color: #721c24; background-color: #f8d7da; padding: 2px 4px; border-radius: 3px; }
-        .non-copyleft { color: #155724; background-color: #d4edda; padding: 2px 4px; border-radius: 3px; }
-        .unknown { color: #856404; background-color: #fff3cd; padding: 2px 4px; border-radius: 3px; }
-        .language { font-style: italic; color: #555; }
+        h1, h2 { color: #2c3e50; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background-color: #f2f2f2; }
+        .copyleft { background-color: #f8d7da; color: #721c24; }
+        .non-copyleft { background-color: #d4edda; color: #155724; }
+        .unknown { background-color: #fff3cd; color: #856404; }
     </style>
 </head>
 <body>
     <h1>Dependency License Report</h1>
-    <h2>Node.js Dependencies</h2>
-    {{if .NodeDeps}}
-        {{template "depList" .NodeDeps}}
-    {{else}}
-        <p>No Node.js dependencies found.</p>
-    {{end}}
-    <h2>Python Dependencies</h2>
-    {{if .PythonDeps}}
-        {{template "depList" .PythonDeps}}
-    {{else}}
-        <p>No Python dependencies found.</p>
-    {{end}}
+    <h2>Summary</h2>
+    <p>{{.Summary}}</p>
+    <h2>Dependencies Table</h2>
+    <table>
+        <tr>
+            <th>Dependency</th>
+            <th>Version</th>
+            <th>License</th>
+            <th>Parent Dependency</th>
+            <th>Language</th>
+            <th>Details</th>
+        </tr>
+        {{range .FlatDeps}}
+        <tr>
+            <td>{{.Name}}</td>
+            <td>{{.Version}}</td>
+            <td>{{.License}}</td>
+            <td>{{.Parent}}</td>
+            <td>{{.Language}}</td>
+            <td><a href="{{.Details}}" target="_blank">View</a></td>
+        </tr>
+        {{end}}
+    </table>
+    <h2>Dependency Graph Visualization</h2>
+    <p>The graphs below represent the dependency trees for Node.js and Python dependencies.</p>
+    <h3>Node.js Dependency Tree</h3>
+    <div id="nodeGraph"></div>
+    <h3>Python Dependency Tree</h3>
+    <div id="pythonGraph"></div>
+    <script src="https://d3js.org/d3.v6.min.js"></script>
+    <script>
+    // Node.js Graph Data
+    var nodeData = {{.NodeTreeJSON}};
+    // Python Graph Data
+    var pythonData = {{.PythonTreeJSON}};
+    
+    function renderTree(data, elementId) {
+        var margin = {top: 20, right: 90, bottom: 30, left: 90},
+            width = 660 - margin.left - margin.right,
+            height = 500 - margin.top - margin.bottom;
+    
+        var svg = d3.select("#" + elementId).append("svg")
+            .attr("width", width + margin.left + margin.right)
+            .attr("height", height + margin.top + margin.bottom)
+          .append("g")
+            .attr("transform", "translate(" + margin.left + "," + margin.top + ")");
+    
+        var treemap = d3.tree().size([height, width]);
+    
+        var root = d3.hierarchy(data[0], function(d) { return d.Transitive; });
+    
+        root = treemap(root);
+    
+        var link = svg.selectAll(".link")
+            .data(root.descendants().slice(1))
+          .enter().append("path")
+            .attr("class", "link")
+            .attr("d", function(d) {
+                return "M" + d.y + "," + d.x
+                    + "C" + (d.parent.y + 50) + "," + d.x
+                    + " " + (d.parent.y + 50) + "," + d.parent.x
+                    + " " + d.parent.y + "," + d.parent.x;
+            })
+            .attr("fill", "none")
+            .attr("stroke", "#ccc");
+    
+        var node = svg.selectAll(".node")
+            .data(root.descendants())
+          .enter().append("g")
+            .attr("class", function(d) { 
+                return "node" + (d.children ? " node--internal" : " node--leaf"); })
+            .attr("transform", function(d) { 
+                return "translate(" + d.y + "," + d.x + ")"; });
+    
+        node.append("circle")
+            .attr("r", 10)
+            .attr("fill", "#fff")
+            .attr("stroke", "steelblue")
+            .attr("stroke-width", "3");
+    
+        node.append("text")
+            .attr("dy", ".35em")
+            .attr("x", function(d) { return d.children ? -13 : 13; })
+            .style("text-anchor", function(d) { 
+                return d.children ? "end" : "start"; })
+            .text(function(d) { return d.data.Name + "@" + d.data.Version; });
+    }
+    
+    renderTree(nodeData, "nodeGraph");
+    renderTree(pythonData, "pythonGraph");
+    </script>
 </body>
 </html>
-
-{{define "depList"}}
-<ul>
-{{range .}}
-    <li>
-        <strong>{{.Name}}@{{.Version}}</strong> - License:
-        {{if .Copyleft}}<span class="copyleft">{{.License}}</span>{{else if eq .License "Unknown"}}<span class="unknown">{{.License}}</span>{{else}}<span class="non-copyleft">{{.License}}</span>{{end}}
-        [<a href="{{.Details}}" target="_blank">Details</a>] <span class="language">({{.Language}})</span>
-        {{if .Transitive}}
-            {{template "depList" .Transitive}}
-        {{end}}
-    </li>
-{{end}}
-</ul>
-{{end}}
 `
-
-func generateHTMLReport(data ReportData) error {
-	tmpl, err := template.New("report").Parse(reportTemplate)
-	if err != nil {
-		return err
-	}
-	reportFile := "dependency-license-report.html"
-	f, err := os.Create(reportFile)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	return tmpl.Execute(f, data)
-}
 
 // --------------------- Main ---------------------
 
@@ -465,9 +582,26 @@ func main() {
 		}
 	}
 
-	reportData := ReportData{
-		NodeDeps:   nodeDeps,
-		PythonDeps: pythonDeps,
+	// Flatten dependencies for table.
+	flatNode := flattenNodeDeps(nodeDeps, "Direct")
+	flatPython := flattenPythonDeps(pythonDeps, "Direct")
+	flatDeps := append(flatNode, flatPython...)
+
+	// Create summary information.
+	summary := fmt.Sprintf("%d direct Node.js dependencies, %d direct Python dependencies. ", len(nodeDeps), len(pythonDeps))
+
+	// Generate JSON for graph visualization.
+	nodeJSON, pythonJSON, err := dependencyTreeJSON(nodeDeps, pythonDeps)
+	if err != nil {
+		log.Println("Error generating JSON for graph:", err)
+		nodeJSON, pythonJSON = "[]", "[]"
+	}
+
+	reportData := ReportTemplateData{
+		Summary:         summary,
+		FlatDeps:        flatDeps,
+		NodeTreeJSON:    template.JS(nodeJSON),
+		PythonTreeJSON:  template.JS(pythonJSON),
 	}
 
 	if err := generateHTMLReport(reportData); err != nil {
