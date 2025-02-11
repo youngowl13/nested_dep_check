@@ -418,15 +418,66 @@ func flattenPythonDeps(pds []*PythonDependency, parent string) []FlatDep {
 // --------------------- JSON for Graph Visualization ---------------------
 
 func dependencyTreeJSON(nodeDeps []*NodeDependency, pythonDeps []*PythonDependency) (string, string, error) {
-	nodeJSONBytes, err := json.MarshalIndent(nodeDeps, "", "  ")
+	// Wrap each dependency array in a dummy root so that D3.js has a single root.
+	dummyNode := map[string]interface{}{
+		"Name":       "Node.js Dependencies",
+		"Version":    "",
+		"Transitive": nodeDeps,
+	}
+	dummyPython := map[string]interface{}{
+		"Name":       "Python Dependencies",
+		"Version":    "",
+		"Transitive": pythonDeps,
+	}
+	nodeJSONBytes, err := json.MarshalIndent(dummyNode, "", "  ")
 	if err != nil {
 		return "", "", err
 	}
-	pythonJSONBytes, err := json.MarshalIndent(pythonDeps, "", "  ")
+	pythonJSONBytes, err := json.MarshalIndent(dummyPython, "", "  ")
 	if err != nil {
 		return "", "", err
 	}
 	return string(nodeJSONBytes), string(pythonJSONBytes), nil
+}
+
+// --------------------- Copyleft Summary ---------------------
+
+func hasCopyleftTransitiveNode(dep *NodeDependency) bool {
+	for _, t := range dep.Transitive {
+		if t.Copyleft || hasCopyleftTransitiveNode(t) {
+			return true
+		}
+	}
+	return false
+}
+
+func countCopyleftTransitivesNode(deps []*NodeDependency) int {
+	count := 0
+	for _, d := range deps {
+		if hasCopyleftTransitiveNode(d) {
+			count++
+		}
+	}
+	return count
+}
+
+func hasCopyleftTransitivePython(dep *PythonDependency) bool {
+	for _, t := range dep.Transitive {
+		if t.Copyleft || hasCopyleftTransitivePython(t) {
+			return true
+		}
+	}
+	return false
+}
+
+func countCopyleftTransitivesPython(deps []*PythonDependency) int {
+	count := 0
+	for _, d := range deps {
+		if hasCopyleftTransitivePython(d) {
+			count++
+		}
+	}
+	return count
 }
 
 // --------------------- Report Template Data and HTML Report Generation ---------------------
@@ -450,7 +501,7 @@ var reportTemplate = `
         table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
         th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
         th { background-color: #f2f2f2; }
-        .copyleft { background-color: #f8d7da; color: #721c24; }
+        .copyleft { background-color: #ffcccc; color: #a10000; }
         .non-copyleft { background-color: #d4edda; color: #155724; }
         .unknown { background-color: #fff3cd; color: #856404; }
     </style>
@@ -473,7 +524,9 @@ var reportTemplate = `
         <tr>
             <td>{{.Name}}</td>
             <td>{{.Version}}</td>
-            <td>{{.License}}</td>
+            <td class="{{if eq .License "Unknown"}}unknown{{else if isCopyleft .License}}copyleft{{else}}non-copyleft{{end}}">
+                {{.License}}
+            </td>
             <td>{{.Parent}}</td>
             <td>{{.Language}}</td>
             <td><a href="{{.Details}}" target="_blank">View</a></td>
@@ -504,7 +557,7 @@ var reportTemplate = `
     
         var treemap = d3.tree().size([height, width]);
     
-        var root = d3.hierarchy(data[0], function(d) { return d.Transitive; });
+        var root = d3.hierarchy(data, function(d) { return d.Transitive; });
     
         root = treemap(root);
     
@@ -550,8 +603,133 @@ var reportTemplate = `
 </html>
 `
 
+func dependencyTreeJSON(nodeDeps []*NodeDependency, pythonDeps []*PythonDependency) (string, string, error) {
+	// Wrap each dependency array in a dummy root so that D3.js has a single root.
+	dummyNode := map[string]interface{}{
+		"Name":       "Node.js Dependencies",
+		"Version":    "",
+		"Transitive": nodeDeps,
+	}
+	dummyPython := map[string]interface{}{
+		"Name":       "Python Dependencies",
+		"Version":    "",
+		"Transitive": pythonDeps,
+	}
+	nodeJSONBytes, err := json.MarshalIndent(dummyNode, "", "  ")
+	if err != nil {
+		return "", "", err
+	}
+	pythonJSONBytes, err := json.MarshalIndent(dummyPython, "", "  ")
+	if err != nil {
+		return "", "", err
+	}
+	return string(nodeJSONBytes), string(pythonJSONBytes), nil
+}
+
+// --------------------- Main Flattening ---------------------
+
+type FlatDep struct {
+	Name     string
+	Version  string
+	License  string
+	Details  string
+	Language string
+	Parent   string
+}
+
+func flattenNodeDeps(nds []*NodeDependency, parent string) []FlatDep {
+	var flats []FlatDep
+	for _, nd := range nds {
+		flat := FlatDep{
+			Name:     nd.Name,
+			Version:  nd.Version,
+			License:  nd.License,
+			Details:  nd.Details,
+			Language: nd.Language,
+			Parent:   parent,
+		}
+		flats = append(flats, flat)
+		if len(nd.Transitive) > 0 {
+			trans := flattenNodeDeps(nd.Transitive, nd.Name)
+			flats = append(flats, trans...)
+		}
+	}
+	return flats
+}
+
+func flattenPythonDeps(pds []*PythonDependency, parent string) []FlatDep {
+	var flats []FlatDep
+	for _, pd := range pds {
+		flat := FlatDep{
+			Name:     pd.Name,
+			Version:  pd.Version,
+			License:  pd.License,
+			Details:  pd.Details,
+			Language: pd.Language,
+			Parent:   parent,
+		}
+		flats = append(flats, flat)
+		if len(pd.Transitive) > 0 {
+			trans := flattenPythonDeps(pd.Transitive, pd.Name)
+			flats = append(flats, trans...)
+		}
+	}
+	return flats
+}
+
+// --------------------- Copyleft Summary ---------------------
+
+func hasCopyleftTransitiveNode(dep *NodeDependency) bool {
+	for _, t := range dep.Transitive {
+		if t.Copyleft || hasCopyleftTransitiveNode(t) {
+			return true
+		}
+	}
+	return false
+}
+
+func countCopyleftTransitivesNode(deps []*NodeDependency) int {
+	count := 0
+	for _, d := range deps {
+		if hasCopyleftTransitiveNode(d) {
+			count++
+		}
+	}
+	return count
+}
+
+func hasCopyleftTransitivePython(dep *PythonDependency) bool {
+	for _, t := range dep.Transitive {
+		if t.Copyleft || hasCopyleftTransitivePython(t) {
+			return true
+		}
+	}
+	return false
+}
+
+func countCopyleftTransitivesPython(deps []*PythonDependency) int {
+	count := 0
+	for _, d := range deps {
+		if hasCopyleftTransitivePython(d) {
+			count++
+		}
+	}
+	return count
+}
+
+// --------------------- Report Template Data and HTML Report Generation ---------------------
+
+type ReportTemplateData struct {
+	Summary         string
+	FlatDeps        []FlatDep
+	NodeTreeJSON    template.JS
+	PythonTreeJSON  template.JS
+}
+
 func generateHTMLReport(data ReportTemplateData) error {
-	tmpl, err := template.New("report").Parse(reportTemplate)
+	tmpl, err := template.New("report").Funcs(template.FuncMap{
+		"isCopyleft": isCopyleft,
+	}).Parse(reportTemplate)
 	if err != nil {
 		return err
 	}
@@ -594,13 +772,18 @@ func main() {
 		}
 	}
 
-	// Flatten dependencies for table.
+	// Flatten dependencies for the table.
 	flatNode := flattenNodeDeps(nodeDeps, "Direct")
 	flatPython := flattenPythonDeps(pythonDeps, "Direct")
 	flatDeps := append(flatNode, flatPython...)
 
 	// Create summary information.
-	summary := fmt.Sprintf("%d direct Node.js dependencies, %d direct Python dependencies.", len(nodeDeps), len(pythonDeps))
+	directNodeCount := len(nodeDeps)
+	directPythonCount := len(pythonDeps)
+	nodeCopyleftCount := countCopyleftTransitivesNode(nodeDeps)
+	pythonCopyleftCount := countCopyleftTransitivesPython(pythonDeps)
+	summary := fmt.Sprintf("%d direct Node.js dependencies (%d with transitive copyleft), %d direct Python dependencies (%d with transitive copyleft).",
+		directNodeCount, nodeCopyleftCount, directPythonCount, pythonCopyleftCount)
 
 	// Generate JSON for graph visualization.
 	nodeJSON, pythonJSON, err := dependencyTreeJSON(nodeDeps, pythonDeps)
