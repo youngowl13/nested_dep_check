@@ -20,14 +20,24 @@ import (
 // isCopyleft returns true if the license string contains any copyleft keywords.
 func isCopyleft(license string) bool {
 	copyleftLicenses := []string{
-		"GPL", "GNU GENERAL PUBLIC LICENSE", "LGPL",
-		"GNU LESSER GENERAL PUBLIC LICENSE", "AGPL",
-		"GNU AFFERO GENERAL PUBLIC LICENSE", "MPL",
-		"MOZILLA PUBLIC LICENSE", "CC-BY-SA",
+		"GPL",
+		"GNU GENERAL PUBLIC LICENSE",
+		"LGPL",
+		"GNU LESSER GENERAL PUBLIC LICENSE",
+		"AGPL",
+		"GNU AFFERO GENERAL PUBLIC LICENSE",
+		"MPL",
+		"MOZILLA PUBLIC LICENSE",
+		"CC-BY-SA",
 		"CREATIVE COMMONS ATTRIBUTION-SHAREALIKE",
-		"EPL", "ECLIPSE PUBLIC LICENSE", "OFL",
-		"OPEN FONT LICENSE", "CPL", "COMMON PUBLIC LICENSE",
-		"OSL", "OPEN SOFTWARE LICENSE",
+		"EPL",
+		"ECLIPSE PUBLIC LICENSE",
+		"OFL",
+		"OPEN FONT LICENSE",
+		"CPL",
+		"COMMON PUBLIC LICENSE",
+		"OSL",
+		"OPEN SOFTWARE LICENSE",
 	}
 	license = strings.ToUpper(license)
 	for _, kw := range copyleftLicenses {
@@ -38,7 +48,7 @@ func isCopyleft(license string) bool {
 	return false
 }
 
-// isCopyleftLicense is an alias for isCopyleft.
+// isCopyleftLicense is simply an alias for isCopyleft.
 func isCopyleftLicense(license string) bool {
 	return isCopyleft(license)
 }
@@ -64,7 +74,7 @@ func findFile(root, target string) string {
 	return found
 }
 
-// parseVariables scans file content for variable definitions (e.g. def cameraxVersion = "1.1.0-alpha05").
+// parseVariables scans file content for variable definitions (e.g., def cameraxVersion = "1.1.0-alpha05").
 func parseVariables(content string) map[string]string {
 	varMap := make(map[string]string)
 	re := regexp.MustCompile(`(?m)^\s*def\s+(\w+)\s*=\s*["']([^"']+)["']`)
@@ -104,6 +114,7 @@ func resolveNodeDependency(pkgName, version string, visited map[string]bool) (*N
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		return nil, err
 	}
+
 	ver := version
 	if ver == "" {
 		if dt, ok := data["dist-tags"].(map[string]interface{}); ok {
@@ -124,13 +135,9 @@ func resolveNodeDependency(pkgName, version string, visited map[string]bool) (*N
 				if ok {
 					ver = latest
 				} else {
-					return nil, fmt.Errorf("version %s and latest not found for %s", ver, pkgName)
+					return nil, fmt.Errorf("version data not found for %s", pkgName)
 				}
-			} else {
-				return nil, fmt.Errorf("version %s and latest not found for %s", ver, pkgName)
 			}
-		} else {
-			return nil, fmt.Errorf("version %s and latest not found for %s", ver, pkgName)
 		}
 	}
 	lic := "Unknown"
@@ -266,14 +273,14 @@ func resolvePythonDependency(pkgName, version string, visited map[string]bool) (
 
 	details := url
 
-	// For simplicity, transitive resolution for Python is not implemented in full.
+	// For simplicity, transitive resolution for Python is not implemented fully.
 	return &PythonDependency{
-		Name:       pkgName,
-		Version:    ver,
-		License:    lic,
-		Details:    details,
-		Copyleft:   isCopyleft(lic),
-		Language:   "python",
+		Name:     pkgName,
+		Version:  ver,
+		License:  lic,
+		Details:  details,
+		Copyleft: isCopyleft(lic),
+		Language: "python",
 	}, nil
 }
 
@@ -383,26 +390,30 @@ var reportTemplate = `
 </head>
 <body>
     <h1>Dependency License Report</h1>
-    {{range .}}
-        <h2>{{.Language}} Dependencies</h2>
-        {{if .Transitive}}
-            {{template "depList" .}}
-        {{else}}
-            <p>No dependencies found.</p>
-        {{end}}
+    <h2>Node.js Dependencies</h2>
+    {{if .NodeDeps}}
+        {{template "depList" .NodeDeps}}
+    {{else}}
+        <p>No Node.js dependencies found.</p>
+    {{end}}
+    <h2>Python Dependencies</h2>
+    {{if .PythonDeps}}
+        {{template "depList" .PythonDeps}}
+    {{else}}
+        <p>No Python dependencies found.</p>
     {{end}}
 </body>
 </html>
 
 {{define "depList"}}
 <ul>
-{{range .Transitive}}
+{{range .}}
     <li>
         <strong>{{.Name}}@{{.Version}}</strong> - License:
         {{if .Copyleft}}<span class="copyleft">{{.License}}</span>{{else if eq .License "Unknown"}}<span class="unknown">{{.License}}</span>{{else}}<span class="non-copyleft">{{.License}}</span>{{end}}
         [<a href="{{.Details}}" target="_blank">Details</a>] <span class="language">({{.Language}})</span>
         {{if .Transitive}}
-            {{template "depList" .}}
+            {{template "depList" .Transitive}}
         {{end}}
     </li>
 {{end}}
@@ -427,6 +438,7 @@ func generateHTMLReport(data ReportData) error {
 // --------------------- Main ---------------------
 
 func main() {
+	// Locate Node.js package.json.
 	nodeFile := findFile(".", "package.json")
 	var nodeDeps []*NodeDependency
 	if nodeFile != "" {
@@ -438,6 +450,7 @@ func main() {
 		}
 	}
 
+	// Locate Python requirements file.
 	pythonFile := findFile(".", "requirements.txt")
 	if pythonFile == "" {
 		pythonFile = findFile(".", "requirement.txt")
