@@ -114,6 +114,7 @@ func resolveNodeDependency(pkgName, version string, visited map[string]bool) (*N
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		return nil, err
 	}
+
 	ver := version
 	if ver == "" {
 		if dt, ok := data["dist-tags"].(map[string]interface{}); ok {
@@ -561,82 +562,6 @@ func dependencyTreeJSON(nodeDeps []*NodeDependency, pythonDeps []*PythonDependen
 	return string(nodeJSONBytes), string(pythonJSONBytes), nil
 }
 
-// --------------------- Flatten Dependencies ---------------------
-
-type FlatDep struct {
-	Name     string
-	Version  string
-	License  string
-	Details  string
-	Language string
-	Parent   string
-}
-
-func flattenNodeDeps(nds []*NodeDependency, parent string) []FlatDep {
-	var flats []FlatDep
-	for _, nd := range nds {
-		flat := FlatDep{
-			Name:     nd.Name,
-			Version:  nd.Version,
-			License:  nd.License,
-			Details:  nd.Details,
-			Language: nd.Language,
-			Parent:   parent,
-		}
-		flats = append(flats, flat)
-		if len(nd.Transitive) > 0 {
-			trans := flattenNodeDeps(nd.Transitive, nd.Name)
-			flats = append(flats, trans...)
-		}
-	}
-	return flats
-}
-
-func flattenPythonDeps(pds []*PythonDependency, parent string) []FlatDep {
-	var flats []FlatDep
-	for _, pd := range pds {
-		flat := FlatDep{
-			Name:     pd.Name,
-			Version:  pd.Version,
-			License:  pd.License,
-			Details:  pd.Details,
-			Language: pd.Language,
-			Parent:   parent,
-		}
-		flats = append(flats, flat)
-		if len(pd.Transitive) > 0 {
-			trans := flattenPythonDeps(pd.Transitive, pd.Name)
-			flats = append(flats, trans...)
-		}
-	}
-	return flats
-}
-
-// --------------------- Report Template Data ---------------------
-
-type ReportTemplateData struct {
-	Summary         string
-	FlatDeps        []FlatDep
-	NodeTreeJSON    template.JS
-	PythonTreeJSON  template.JS
-}
-
-// --------------------- Main HTML Report Generation ---------------------
-
-func generateHTMLReport(data ReportTemplateData) error {
-	tmpl, err := template.New("report").Parse(reportTemplate)
-	if err != nil {
-		return err
-	}
-	reportFile := "dependency-license-report.html"
-	f, err := os.Create(reportFile)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	return tmpl.Execute(f, data)
-}
-
 // --------------------- Main ---------------------
 
 func main() {
@@ -667,7 +592,7 @@ func main() {
 		}
 	}
 
-	// Flatten dependencies for the table.
+	// Flatten dependencies for table.
 	flatNode := flattenNodeDeps(nodeDeps, "Direct")
 	flatPython := flattenPythonDeps(pythonDeps, "Direct")
 	flatDeps := append(flatNode, flatPython...)
@@ -683,10 +608,10 @@ func main() {
 	}
 
 	reportData := ReportTemplateData{
-		Summary:         summary,
-		FlatDeps:        flatDeps,
-		NodeTreeJSON:    template.JS(nodeJSON),
-		PythonTreeJSON:  template.JS(pythonJSON),
+		Summary:        summary,
+		FlatDeps:       flatDeps,
+		NodeTreeJSON:   template.JS(nodeJSON),
+		PythonTreeJSON: template.JS(pythonJSON),
 	}
 
 	if err := generateHTMLReport(reportData); err != nil {
