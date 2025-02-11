@@ -106,6 +106,7 @@ func resolveNodeDependency(pkgName, version string, visited map[string]bool) (*N
 		return nil, err
 	}
 	defer resp.Body.Close()
+
 	var data map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		return nil, err
@@ -715,7 +716,7 @@ func countCopyleftTransitivesPython(deps []*PythonDependency) int {
 	return count
 }
 
-// --------------------- Main Report Generation ---------------------
+// --------------------- Report Template Data ---------------------
 
 type ReportTemplateData struct {
 	Summary         string
@@ -723,6 +724,8 @@ type ReportTemplateData struct {
 	NodeTreeJSON    template.JS
 	PythonTreeJSON  template.JS
 }
+
+// --------------------- Main Report Generation and Main ---------------------
 
 func main() {
 	// Locate Node.js package.json.
