@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	
 	"strings"
 	"sync"
 
@@ -18,7 +17,7 @@ import (
 	"github.com/PuerkitoBio/goquery"
 )
 
-// isCopyleft checks license text for known copyleft strings
+// isCopyleft checks if a license text likely indicates a copyleft license.
 func isCopyleft(license string) bool {
 	copyleft := []string{
 		"GPL","GNU GENERAL PUBLIC LICENSE","LGPL","GNU LESSER GENERAL PUBLIC LICENSE",
@@ -35,12 +34,12 @@ func isCopyleft(license string) bool {
 	return false
 }
 
-// findFile searches for target
+// findFile recursively locates 'target' starting at 'root'.
 func findFile(root, target string) string {
 	var found string
 	filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err==nil && d.Name()==target {
-			found=path
+			found = path
 			return filepath.SkipDir
 		}
 		return nil
@@ -48,15 +47,17 @@ func findFile(root, target string) string {
 	return found
 }
 
-// removeCaretTilde strips leading ^ or ~
+// removeCaretTilde strips ^ or ~ from a version string.
 func removeCaretTilde(ver string) string {
-	return strings.TrimLeft(strings.TrimSpace(ver),"^~")
+	ver = strings.TrimSpace(ver)
+	return strings.TrimLeft(ver, "^~")
 }
 
-// fallbackNpmWebsiteLicense tries to parse HTML from npmjs.com for your snippet
-func fallbackNpmWebsiteLicense(pkg string) string {
-	resp, err := http.Get("https://www.npmjs.com/package/" + pkg)
-	if err!=nil||resp.StatusCode!=200{
+// fallbackNpmWebsiteLicense attempts to parse the npm webpage for "License" info using goquery.
+func fallbackNpmWebsiteLicense(pkgName string) string {
+	url := "https://www.npmjs.com/package/" + pkgName
+	resp, err := http.Get(url)
+	if err!=nil || resp.StatusCode!=200{
 		return ""
 	}
 	defer resp.Body.Close()
@@ -65,126 +66,131 @@ func fallbackNpmWebsiteLicense(pkg string) string {
 	if err2!=nil{
 		return ""
 	}
-	var found string
-	// Specifically look for <h3>License</h3> and the adjacent <p> with e.g. class "f2874b88"
-	// adapt if npm changes the structure
+	var foundLicense string
+	// We look for an <h3> or some text "License", then a sibling <p> with e.g. "MIT".
 	doc.Find("h3").EachWithBreak(func(i int, s *goquery.Selection) bool {
 		txt := strings.TrimSpace(s.Text())
 		if strings.EqualFold(txt, "License") {
-			// typically next sibling is <p class="f2874b88 ...">MIT</p>
 			p := s.Next()
 			if goquery.NodeName(p)=="p" {
-				licenseText := strings.TrimSpace(p.Text())
-				if licenseText!="" {
-					found=licenseText
+				pText := strings.TrimSpace(p.Text())
+				if pText!="" {
+					foundLicense = pText
 				}
 			}
 			return false // break
 		}
 		return true
 	})
-	if found=="" {
-		// try an alternative approach: search "License" in the div text
-		doc.Find("div").Each(func(i int, sel *goquery.Selection){
-			divtxt := strings.ToUpper(sel.Text())
-			if strings.Contains(divtxt, "LICENSE"){
-				// parse known patterns
-				patterns := []string{"MIT","BSD","APACHE","ISC","ARTISTIC","ZLIB","WTFPL",
-					"CDDL","UNLICENSE","EUPL","MPL","CC0","LGPL","AGPL"}
-				for _, p := range patterns {
-					if strings.Contains(divtxt, p) {
-						found=p
-						return
-					}
+	if foundLicense!=""{
+		return foundLicense
+	}
+	// Alternative fallback: search entire doc for "License" plus known keywords
+	doc.Find("div").Each(func(i int, sel *goquery.Selection){
+		divtxt := strings.ToUpper(sel.Text())
+		if strings.Contains(divtxt, "LICENSE"){
+			patterns := []string{"MIT","BSD","APACHE","ISC","ARTISTIC","ZLIB","WTFPL",
+				"CDDL","UNLICENSE","EUPL","MPL","CC0","LGPL","AGPL"}
+			for _, pat := range patterns {
+				if strings.Contains(divtxt, pat) {
+					foundLicense=pat
+					return
 				}
 			}
-		})
-	}
-	return found
+		}
+	})
+	return foundLicense
 }
 
-// ------------------- Node.js -------------------
+// ------------------- Node Dependencies -------------------
 
-type NodeDependency struct{
-	Name,Version,License,Details string
-	Copyleft bool
+// NodeDependency holds Node package info + sub-dependencies (Transitive).
+type NodeDependency struct {
+	Name       string
+	Version    string
+	License    string
+	Details    string
+	Copyleft   bool
 	Transitive []*NodeDependency
-	Language string
+	Language   string
 }
 
-func parseNodeDependencies(path string)([]*NodeDependency,error){
-	raw,err:=os.ReadFile(path)
+func parseNodeDependencies(path string) ([]*NodeDependency, error) {
+	raw, err := os.ReadFile(path)
 	if err!=nil{return nil,err}
-	var data map[string]interface{}
-	if err:=json.Unmarshal(raw,&data);err!=nil{return nil,err}
-	deps, _ := data["dependencies"].(map[string]interface{})
+	var pkg map[string]interface{}
+	if err:=json.Unmarshal(raw,&pkg); err!=nil{return nil,err}
+	deps, _ := pkg["dependencies"].(map[string]interface{})
 	if deps==nil{
-		return nil,fmt.Errorf("no dependencies found in package.json")
+		return nil, fmt.Errorf("no dependencies found in package.json")
 	}
-	visited:=map[string]bool{}
-	var out []*NodeDependency
-	for nm,ver:=range deps{
-		str,_:=ver.(string)
-		d,e:=resolveNodeDependency(nm, removeCaretTilde(str), visited)
-		if e==nil&&d!=nil{
-			out=append(out,d)
+	visited := map[string]bool{}
+	var results []*NodeDependency
+	for nm, ver := range deps {
+		vstr, _ := ver.(string)
+		nd, e := resolveNodeDependency(nm, removeCaretTilde(vstr), visited)
+		if e==nil && nd!=nil{
+			results=append(results, nd)
 		}
 	}
-	return out,nil
+	return results,nil
 }
 
-func resolveNodeDependency(pkg,ver string, visited map[string]bool)(*NodeDependency,error){
-	key:=pkg+"@"+ver
-	if visited[key]{return nil,nil}
-	visited[key]=true
+func resolveNodeDependency(pkgName, version string, visited map[string]bool)(*NodeDependency, error){
+	key := pkgName+"@"+version
+	if visited[key]{
+		return nil,nil
+	}
+	visited[key] = true
 
-	resp,err:=http.Get("https://registry.npmjs.org/"+pkg)
+	resp,err:=http.Get("https://registry.npmjs.org/"+pkgName)
 	if err!=nil{return nil,err}
 	defer resp.Body.Close()
-
-	var regData map[string]interface{}
-	if err:=json.NewDecoder(resp.Body).Decode(&regData);err!=nil{return nil,err}
-	if ver==""{
-		if dist,ok:=regData["dist-tags"].(map[string]interface{});ok{
-			if lat,ok:=dist["latest"].(string);ok{
-				ver=lat
+	var data map[string]interface{}
+	if err:=json.NewDecoder(resp.Body).Decode(&data); err!=nil{
+		return nil,err
+	}
+	if version==""{
+		if dist,ok:=data["dist-tags"].(map[string]interface{});ok{
+			if latest,ok:=dist["latest"].(string);ok{
+				version=latest
 			}
 		}
 	}
 	license:="Unknown"
 	var trans []*NodeDependency
-	if vs,ok:=regData["versions"].(map[string]interface{});ok{
-		if verData,ok:=vs[ver].(map[string]interface{});ok{
+	if vs,ok:=data["versions"].(map[string]interface{});ok{
+		if verData,ok:=vs[version].(map[string]interface{});ok{
 			license=findNpmLicense(verData)
 			if deps,ok:=verData["dependencies"].(map[string]interface{});ok{
-				for nm,v2:=range deps{
-					str2,_:=v2.(string)
-					ch,e2:=resolveNodeDependency(nm, removeCaretTilde(str2), visited)
-					if e2==nil&&ch!=nil{
+				for d,dv := range deps{
+					str2,_:=dv.(string)
+					ch,e2:=resolveNodeDependency(d, removeCaretTilde(str2), visited)
+					if e2==nil && ch!=nil{
 						trans=append(trans,ch)
 					}
 				}
 			}
 		}
 	}
+	// fallback
 	if license=="Unknown"{
-		// fallback to npm webpage parse
-		lic2 := fallbackNpmWebsiteLicense(pkg)
-		if lic2!=""{
-			license=lic2
+		webLic := fallbackNpmWebsiteLicense(pkgName)
+		if webLic!=""{
+			license=webLic
 		}
 	}
 	return &NodeDependency{
-		Name: pkg,Version:ver,License:license,
-		Details:"https://www.npmjs.com/package/"+pkg,
+		Name: pkgName, Version:version, License:license,
+		Details:"https://www.npmjs.com/package/"+pkgName,
 		Copyleft:isCopyleft(license),
-		Transitive:trans,
+		Transitive: trans,
 		Language:"node",
 	},nil
 }
 
 func findNpmLicense(verData map[string]interface{})string{
-	if l, ok:=verData["license"].(string);ok&&l!=""{
+	if l,ok:=verData["license"].(string);ok&&l!=""{
 		return l
 	}
 	if lm,ok:=verData["license"].(map[string]interface{});ok{
@@ -200,33 +206,37 @@ func findNpmLicense(verData map[string]interface{})string{
 	return "Unknown"
 }
 
-// ------------------- Python -------------------
+// ------------------- Python Dependencies -------------------
 
 type PythonDependency struct{
-	Name,Version,License,Details string
+	Name string
+	Version string
+	License string
+	Details string
 	Copyleft bool
 	Transitive []*PythonDependency
 	Language string
 }
 
-func parsePythonDependencies(path string)([]*PythonDependency,error){
+func parsePythonDependencies(path string) ([]*PythonDependency, error) {
 	f,err:=os.Open(path)
 	if err!=nil{return nil,err}
 	defer f.Close()
-	reqs,err:=parseRequirements(f)
+	reqs, err:=parseRequirements(f)
 	if err!=nil{return nil,err}
 	var results []*PythonDependency
 	var wg sync.WaitGroup
 	depChan:=make(chan PythonDependency)
 	errChan:=make(chan error)
-	for _, r:=range reqs{
+
+	for _, r := range reqs {
 		wg.Add(1)
 		go func(nm,vr string){
 			defer wg.Done()
-			d,e:=resolvePythonDependency(nm,vr,map[string]bool{})
+			d,e := resolvePythonDependency(nm,vr,map[string]bool{})
 			if e!=nil{errChan<-e;return}
 			if d!=nil{depChan<-*d}
-		}(r.name,r.version)
+		}(r.name, r.version)
 	}
 	go func(){
 		wg.Wait()
@@ -242,11 +252,12 @@ func parsePythonDependencies(path string)([]*PythonDependency,error){
 	return results,nil
 }
 
-func resolvePythonDependency(pkg,ver string, visited map[string]bool)(*PythonDependency,error){
-	if visited[pkg+"@"+ver]{return nil,nil}
-	visited[pkg+"@"+ver]=true
+func resolvePythonDependency(pkgName, version string, visited map[string]bool)(*PythonDependency,error){
+	key:=pkgName+"@"+version
+	if visited[key]{return nil,nil}
+	visited[key]=true
 
-	resp,err:=http.Get("https://pypi.org/pypi/"+pkg+"/json")
+	resp,err:=http.Get("https://pypi.org/pypi/"+pkgName+"/json")
 	if err!=nil{return nil,err}
 	defer resp.Body.Close()
 	if resp.StatusCode!=200{
@@ -256,11 +267,11 @@ func resolvePythonDependency(pkg,ver string, visited map[string]bool)(*PythonDep
 	if err:=json.NewDecoder(resp.Body).Decode(&data);err!=nil{return nil,err}
 	info,_:=data["info"].(map[string]interface{})
 	if info==nil{
-		return nil,fmt.Errorf("info missing for %s",pkg)
+		return nil,fmt.Errorf("info missing for %s",pkgName)
 	}
-	if ver==""{
+	if version==""{
 		if v2,ok:=info["version"].(string);ok{
-			ver=v2
+			version=v2
 		}
 	}
 	license:="Unknown"
@@ -268,8 +279,8 @@ func resolvePythonDependency(pkg,ver string, visited map[string]bool)(*PythonDep
 		license=l
 	}
 	return &PythonDependency{
-		Name:pkg, Version:ver, License:license,
-		Details:"https://pypi.org/pypi/"+pkg+"/json",
+		Name:pkgName,Version:version,License:license,
+		Details:"https://pypi.org/pypi/"+pkgName+"/json",
 		Copyleft:isCopyleft(license),
 		Language:"python",
 	},nil
@@ -281,7 +292,7 @@ func parseRequirements(r io.Reader)([]requirement,error){
 	if err!=nil{return nil,err}
 	lines:=strings.Split(string(raw),"\n")
 	var out []requirement
-	for _,ln:=range lines{
+	for _, ln:=range lines{
 		line:=strings.TrimSpace(ln)
 		if line==""||strings.HasPrefix(line,"#"){continue}
 		p:=strings.Split(line,"==")
@@ -300,10 +311,15 @@ func parseRequirements(r io.Reader)([]requirement,error){
 	return out,nil
 }
 
-// Flatten
+// Flatten for summary table
 
 type FlatDep struct{
-	Name,Version,License,Details,Language,Parent string
+	Name string
+	Version string
+	License string
+	Details string
+	Language string
+	Parent string
 }
 
 func flattenNodeAll(nds []*NodeDependency, parent string)[]FlatDep{
@@ -333,186 +349,153 @@ func flattenPyAll(pds []*PythonDependency, parent string)[]FlatDep{
 	return out
 }
 
-// buildTreeJSON - if no direct node or python, put a single stub so user sees something
-func buildTreeJSON(node []*NodeDependency, py []*PythonDependency)(string,string,error){
-	if len(node)==0{
-		node=[]*NodeDependency{
-			{Name:"No Node dependencies",Version:"",License:"",Details:"",Language:"node"},
+// We want an HTML nested <details> approach for each NodeDependency and PythonDependency
+// so no scripts are required to expand/collapse sub-dependencies.
+
+func buildNodeDependencyHTML(nd *NodeDependency) string {
+	// We'll produce <details><summary>NAME@VER (License: ???)</summary> then children
+	summaryText := fmt.Sprintf("%s@%s (License: %s)", nd.Name, nd.Version, nd.License)
+	var sb strings.Builder
+	sb.WriteString("<details>")
+	sb.WriteString("<summary>")
+	sb.WriteString(template.HTMLEscapeString(summaryText))
+	sb.WriteString("</summary>\n")
+
+	if len(nd.Transitive)>0 {
+		sb.WriteString("<ul>\n")
+		for _,child:=range nd.Transitive{
+			sb.WriteString("<li>")
+			sb.WriteString(buildNodeDependencyHTML(child))
+			sb.WriteString("</li>\n")
 		}
+		sb.WriteString("</ul>\n")
 	}
-	if len(py)==0{
-		py=[]*PythonDependency{
-			{Name:"No Python dependencies",Version:"",License:"",Details:"",Language:"python"},
-		}
-	}
-	nroot:=map[string]interface{}{
-		"Name":"Node.js Dependencies","Version":"","Transitive":node,
-	}
-	proot:=map[string]interface{}{
-		"Name":"Python Dependencies","Version":"","Transitive":py,
-	}
-	nb,e:=json.MarshalIndent(nroot,"","  ")
-	if e!=nil{return"","",e}
-	pb,e2:=json.MarshalIndent(proot,"","  ")
-	if e2!=nil{return"","",e2}
-	return string(nb),string(pb),nil
+	sb.WriteString("</details>\n")
+	return sb.String()
 }
 
-// Single HTML
-type SinglePageData struct{
+func buildPythonDependencyHTML(pd *PythonDependency) string {
+	summaryText := fmt.Sprintf("%s@%s (License: %s)", pd.Name, pd.Version, pd.License)
+	var sb strings.Builder
+	sb.WriteString("<details>")
+	sb.WriteString("<summary>")
+	sb.WriteString(template.HTMLEscapeString(summaryText))
+	sb.WriteString("</summary>\n")
+
+	if len(pd.Transitive)>0 {
+		sb.WriteString("<ul>\n")
+		for _,child:=range pd.Transitive{
+			sb.WriteString("<li>")
+			sb.WriteString(buildPythonDependencyHTML(child))
+			sb.WriteString("</li>\n")
+		}
+		sb.WriteString("</ul>\n")
+	}
+	sb.WriteString("</details>\n")
+	return sb.String()
+}
+
+// If no direct deps, we produce a single details node: "No Node dependencies"
+func buildNodeTreeHTML(nodes []*NodeDependency) string {
+	if len(nodes)==0 {
+		return `<p>No Node dependencies found.</p>`
+	}
+	var sb strings.Builder
+	for _,nd:=range nodes{
+		sb.WriteString(buildNodeDependencyHTML(nd))
+	}
+	return sb.String()
+}
+func buildPythonTreeHTML(nodes []*PythonDependency) string {
+	if len(nodes)==0 {
+		return `<p>No Python dependencies found.</p>`
+	}
+	var sb strings.Builder
+	for _,pd:=range nodes{
+		sb.WriteString(buildPythonDependencyHTML(pd))
+	}
+	return sb.String()
+}
+
+// We produce a single HTML with summary table + Node detail tree + Python detail tree, all static (<details>).
+type ReportData struct{
 	Summary string
-	Deps []FlatDep
-	NodeJSON,PythonJSON string
+	FlatDeps []FlatDep
+	NodeRoot []*NodeDependency
+	PyRoot   []*PythonDependency
 }
 
-var singleTmpl=`<!DOCTYPE html><html><head><meta charset="UTF-8">
-<title>Dependency License Report</title>
-<style>
-body{font-family:Arial,sans-serif;margin:20px}
-h1,h2{color:#2c3e50}
-table{width:100%;border-collapse:collapse;margin-bottom:20px}
-th,td{border:1px solid #ddd;padding:8px;text-align:left}
-th{background:#f2f2f2}
-.copyleft{background:#f8d7da;color:#721c24}
-.non-copyleft{background:#d4edda;color:#155724}
-.unknown{background:#ffff99;color:#333}
-.graph-container{
-  margin:0 auto;
-  width:1200px;
-}
-</style>
+var htmlTemplate=`
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Dependency License Report</title>
+  <style>
+    body{font-family:Arial,sans-serif;margin:20px}
+    h1,h2{color:#2c3e50}
+    table{width:100%;border-collapse:collapse;margin-bottom:20px}
+    th,td{border:1px solid #ddd;padding:8px;text-align:left}
+    th{background:#f2f2f2}
+    .copyleft{background:#f8d7da;color:#721c24}
+    .non-copyleft{background:#d4edda;color:#155724}
+    .unknown{background:#ffff99;color:#333}
+    details{margin:4px 0}
+    summary{cursor:pointer;font-weight:bold}
+  </style>
 </head>
 <body>
 <h1>Dependency License Report</h1>
+
 <h2>Summary</h2>
 <p>{{.Summary}}</p>
 
 <h2>Dependencies Table</h2>
 <table>
-<tr><th>Name</th><th>Version</th><th>License</th><th>Parent</th><th>Language</th><th>Details</th></tr>
-{{range .Deps}}
-<tr>
-<td>{{.Name}}</td>
-<td>{{.Version}}</td>
-<td class="{{if eq .License "Unknown"}}unknown{{else if isCopyleft .License}}copyleft{{else}}non-copyleft{{end}}">
-{{.License}}</td>
-<td>{{.Parent}}</td>
-<td>{{.Language}}</td>
-<td><a href="{{.Details}}" target="_blank">View</a></td>
-</tr>
-{{end}}
+  <tr>
+    <th>Name</th>
+    <th>Version</th>
+    <th>License</th>
+    <th>Parent</th>
+    <th>Language</th>
+    <th>Details</th>
+  </tr>
+  {{range .FlatDeps}}
+  <tr>
+    <td>{{.Name}}</td>
+    <td>{{.Version}}</td>
+    <td class="{{if eq .License "Unknown"}}unknown{{else if isCopyleft .License}}copyleft{{else}}non-copyleft{{end}}">{{.License}}</td>
+    <td>{{.Parent}}</td>
+    <td>{{.Language}}</td>
+    <td><a href="{{.Details}}" target="_blank">View</a></td>
+  </tr>
+  {{end}}
 </table>
 
-<div class="graph-container">
-<h2>Node.js Collapsible Tree</h2>
-<div id="nodeGraph"></div>
+<h2>Node.js Dependencies Tree</h2>
+<div>
+  {{.NodeHTML}}
 </div>
 
-<br/><br/>
-
-<div class="graph-container">
-<h2>Python Collapsible Tree</h2>
-<div id="pythonGraph"></div>
+<h2>Python Dependencies Tree</h2>
+<div>
+  {{.PyHTML}}
 </div>
 
-<script src="https://d3js.org/d3.v6.min.js"></script>
-<script>
-function collapsibleTree(data, container){
-  var margin={top:20,right:200,bottom:30,left:200},
-      width=1200 - margin.left - margin.right,
-      height=800 - margin.top - margin.bottom;
+</body>
+</html>
+`
 
-  var svg=d3.select(container).append("svg")
-    .attr("width",width+margin.left+margin.right)
-    .attr("height",height+margin.top+margin.bottom)
-    .append("g")
-    .attr("transform","translate("+margin.left+","+margin.top+")");
-
-  var treemap=d3.tree().size([height,width]);
-  var root=d3.hierarchy(data,function(d){return d.Transitive;});
-  root.x0=height/2; root.y0=0;
-
-  update(root);
-
-  function update(source){
-    var treeData=treemap(root),
-        nodes=treeData.descendants(),
-        links=nodes.slice(1);
-
-    // Extra wide horizontal spacing
-    nodes.forEach(function(d){d.y=d.depth*600;});
-
-    var node=svg.selectAll("g.node").data(nodes,function(d){return d.id||(d.id=Math.random())});
-    var nodeEnter=node.enter().append("g").attr("class","node")
-    .attr("transform",function(d){return"translate("+source.y0+","+source.x0+")";})
-    .on("click",click);
-
-    nodeEnter.append("circle").attr("class","node").attr("r",1e-6)
-    .style("fill",function(d){return d._children?"lightsteelblue":"#fff"})
-    .style("stroke","steelblue").style("stroke-width","3");
-
-    nodeEnter.append("text").attr("dy",".35em")
-    .attr("x",function(d){return d.children||d._children?-13:13;})
-    .style("text-anchor",function(d){return d.children||d._children?"end":"start";})
-    .text(function(d){return d.data.Name+"@"+d.data.Version;});
-
-    var nodeUpdate=nodeEnter.merge(node);
-    nodeUpdate.transition().duration(200)
-      .attr("transform",function(d){return"translate("+d.y+","+d.x+")";});
-    nodeUpdate.select("circle.node").attr("r",10)
-      .style("fill",function(d){return d._children?"lightsteelblue":"#fff"});
-
-    var nodeExit=node.exit().transition().duration(200)
-      .attr("transform",function(d){return"translate("+source.y+","+source.x+")";})
-      .remove();
-    nodeExit.select("circle").attr("r",1e-6);
-
-    var link=svg.selectAll("path.link").data(links,function(d){return d.id||(d.id=Math.random())});
-    var linkEnter=link.enter().insert("path","g").attr("class","link")
-    .attr("d",function(d){var o={x:source.x0,y:source.y0};return diag(o,o)});
-    var linkUpdate=linkEnter.merge(link);
-    linkUpdate.transition().duration(200)
-      .attr("d",function(d){return diag(d,d.parent)});
-    link.exit().transition().duration(200)
-      .attr("d",function(d){var o={x:source.x,y:source.y};return diag(o,o)})
-      .remove();
-    nodes.forEach(function(d){d.x0=d.x; d.y0=d.y;});
-
-    function diag(s,d){
-      return"M"+s.y+","+s.x
-       +"C"+(s.y+50)+","+s.x
-       +" "+(d.y+50)+","+d.x
-       +" "+d.y+","+d.x;
-    }
-  }
-  function click(event,d){
-    if(d.children){d._children=d.children;d.children=null;}
-    else{d.children=d._children;d._children=null;}
-    update(d);
-  }
-}
-
-var nodeData = NODE_JSON;
-var pythonData= PYTHON_JSON;
-
-collapsibleTree(nodeData,"#nodeGraph");
-collapsibleTree(pythonData,"#pythonGraph");
-</script>
-</body></html>`
-
-func generateSingleHTML(rep SinglePageData) error {
-	t, e := template.New("report").Funcs(template.FuncMap{
-		"isCopyleft": isCopyleft,
-	}).Parse(singleTmpl)
-	if e!=nil{return e}
-	f, e2 := os.Create("dependency-license-report.html")
-	if e2!=nil{return e2}
-	defer f.Close()
-	return t.Execute(f, rep)
+// We define a minimal struct to pass to the template, including pre-built HTML for the <details> trees.
+type CombinedHTMLData struct{
+	Summary string
+	FlatDeps []FlatDep
+	NodeHTML template.HTML
+	PyHTML   template.HTML
 }
 
 func main(){
-	// 1) Parse Node
+	// 1) parse Node
 	nFile:=findFile(".","package.json")
 	var nodeDeps []*NodeDependency
 	if nFile!=""{
@@ -520,45 +503,63 @@ func main(){
 		if err==nil{nodeDeps=nd}else{log.Println("Node parse error:",err)}
 	}
 
-	// 2) Parse Python
+	// 2) parse Python
 	pFile:=findFile(".","requirements.txt")
-	if pFile==""{pFile=findFile(".","requirement.txt")}
+	if pFile==""{
+		pFile=findFile(".","requirement.txt")
+	}
 	var pyDeps []*PythonDependency
 	if pFile!=""{
 		pd,err:=parsePythonDependencies(pFile)
 		if err==nil{pyDeps=pd}else{log.Println("Python parse error:",err)}
 	}
 
-	// 3) Flatten
-	flatNode := flattenNodeAll(nodeDeps,"Direct")
-	flatPy   := flattenPyAll(pyDeps,"Direct")
-	allDeps  := append(flatNode, flatPy...)
+	// 3) Flatten for table
+	fn := flattenNodeAll(nodeDeps,"Direct")
+	fp := flattenPyAll(pyDeps,"Direct")
+	allFlat := append(fn,fp...)
 
-	// 4) Count copyleft
-	countCleft:=0
-	for _,dep := range allDeps {
-		if isCopyleft(dep.License){countCleft++}
+	// 4) Count how many are copyleft
+	copyleftCount:=0
+	for _,dep:=range allFlat {
+		if isCopyleft(dep.License){copyleftCount++}
 	}
-	summary := fmt.Sprintf("%d direct Node.js deps, %d direct Python deps, Copyleft: %d",
-		len(nodeDeps),len(pyDeps),countCleft)
+	summary := fmt.Sprintf("%d direct Node.js deps, %d direct Python deps, Copyleft:%d",
+		len(nodeDeps), len(pyDeps), copyleftCount)
 
-	// 5) Build JSON for D3
-	njson, pjson, err := buildTreeJSON(nodeDeps, pyDeps)
-	if err!=nil{
-		log.Println("Error building JSON for trees:", err)
-		njson,pjson="{}","{}"
-	}
+	// 5) Build nested <details> for Node
+	nodeHTML := buildNodeTreeHTML(nodeDeps)
+	// 6) Build nested <details> for Python
+	pyHTML   := buildPythonTreeHTML(pyDeps)
 
-	// 6) Single HTML
-	reportData := SinglePageData{
+	// 7) Prepare data for template
+	data := CombinedHTMLData{
 		Summary: summary,
-		Deps: allDeps,
-		NodeJSON: njson,
-		PythonJSON: pjson,
+		FlatDeps: allFlat,
+		NodeHTML: template.HTML(nodeHTML),
+		PyHTML:   template.HTML(pyHTML),
 	}
-	if e:=generateSingleHTML(reportData); e!=nil{
-		log.Println("Error generating HTML:", e)
+
+	// 8) Render final single HTML
+	tmpl,err := template.New("report").Funcs(template.FuncMap{
+		"isCopyleft": isCopyleft,
+	}).Parse(htmlTemplate)
+	if err!=nil{
+		log.Println("Template parse error:", err)
 		os.Exit(1)
 	}
-	fmt.Println("dependency-license-report.html generated. Large horizontal spacing, goquery fallback. Yellow for Unknown.")
+	out,err2 := os.Create("dependency-license-report.html")
+	if err2!=nil{
+		log.Println("Create file error:",err2)
+		os.Exit(1)
+	}
+	defer out.Close()
+
+	if e:=tmpl.Execute(out, data);e!=nil{
+		log.Println("Template exec error:", e)
+		os.Exit(1)
+	}
+
+	fmt.Println("dependency-license-report.html generated successfully!")
+	fmt.Println("No JavaScript-based graphs. Using <details> for nested trees. No local-file script blocking.")
 }
