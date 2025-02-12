@@ -17,16 +17,16 @@ import (
 	"io/fs"
 )
 
-// isCopyleft checks if a license text is likely copyleft
+// isCopyleft checks if license text might be a copyleft license.
 func isCopyleft(license string) bool {
-	copyleft := []string{
+	copyleftLicenses := []string{
 		"GPL","GNU GENERAL PUBLIC LICENSE","LGPL","GNU LESSER GENERAL PUBLIC LICENSE",
 		"AGPL","GNU AFFERO GENERAL PUBLIC LICENSE","MPL","MOZILLA PUBLIC LICENSE",
 		"CC-BY-SA","CREATIVE COMMONS ATTRIBUTION-SHAREALIKE","EPL","ECLIPSE PUBLIC LICENSE",
 		"OFL","OPEN FONT LICENSE","CPL","COMMON PUBLIC LICENSE","OSL","OPEN SOFTWARE LICENSE",
 	}
 	up := strings.ToUpper(license)
-	for _, kw := range copyleft {
+	for _, kw := range copyleftLicenses {
 		if strings.Contains(up, kw) {
 			return true
 		}
@@ -34,12 +34,12 @@ func isCopyleft(license string) bool {
 	return false
 }
 
-// findFile recursively finds target in root
+// findFile recursively searches for target in root.
 func findFile(root, target string) string {
 	var found string
 	filepath.WalkDir(root, func(path string,d fs.DirEntry,err error)error{
-		if err == nil && d.Name() == target {
-			found = path
+		if err == nil && d.Name()==target {
+			found=path
 			return filepath.SkipDir
 		}
 		return nil
@@ -47,12 +47,12 @@ func findFile(root, target string) string {
 	return found
 }
 
-// removeCaretTilde strips ^ or ~ from version
+// removeCaretTilde strips leading ^ or ~ from version
 func removeCaretTilde(ver string) string {
 	return strings.TrimLeft(strings.TrimSpace(ver), "^~")
 }
 
-// fallbackNpmLicenseByCurl does shell: curl -s https://www.npmjs.com/package/<pkg> | grep -i license
+// fallbackNpmLicenseByCurl runs `curl -s npmjs.com/package/<pkg> | grep -i license`.
 func fallbackNpmLicenseByCurl(pkg string) string {
 	url := "https://www.npmjs.com/package/" + pkg
 	cmdCurl := exec.Command("curl", "-s", url)
@@ -68,7 +68,7 @@ func fallbackNpmLicenseByCurl(pkg string) string {
 	}
 	lines := strings.Split(string(grepOut), "\n")
 	for _,ln:=range lines{
-		ln= strings.TrimSpace(ln)
+		ln=strings.TrimSpace(ln)
 		if ln==""{continue}
 		lic := parseLicenseFromLine(ln)
 		if lic!="" {return lic}
@@ -76,11 +76,11 @@ func fallbackNpmLicenseByCurl(pkg string) string {
 	return ""
 }
 
-// parseLicenseFromLine picks known license keywords from a line
+// parseLicenseFromLine extracts known license substrings from a line (like "MIT","BSD","APACHE"...).
 func parseLicenseFromLine(line string) string {
-	knownLicenses := []string{"MIT","BSD","APACHE","ISC","ARTISTIC","ZLIB","WTFPL","CDDL","UNLICENSE","EUPL","MPL","CC0","LGPL","AGPL"}
+	known := []string{"MIT","BSD","APACHE","ISC","ARTISTIC","ZLIB","WTFPL","CDDL","UNLICENSE","EUPL","MPL","CC0","LGPL","AGPL"}
 	up := strings.ToUpper(line)
-	for _, kw := range knownLicenses {
+	for _, kw := range known {
 		if strings.Contains(up, kw) {
 			return kw
 		}
@@ -88,7 +88,7 @@ func parseLicenseFromLine(line string) string {
 	return ""
 }
 
-// ------------------- Node.js Dependencies -------------------
+// ----------------- Node.js Dependencies -----------------
 
 type NodeDependency struct {
 	Name       string
@@ -100,22 +100,22 @@ type NodeDependency struct {
 	Language   string
 }
 
-func parseNodeDependencies(path string) ([]*NodeDependency, error) {
-	raw, err:=os.ReadFile(path)
+func parseNodeDependencies(path string)([]*NodeDependency, error){
+	raw, err := os.ReadFile(path)
 	if err!=nil{return nil,err}
-	var data map[string]interface{}
-	if err:=json.Unmarshal(raw,&data);err!=nil{return nil,err}
-	deps, _ := data["dependencies"].(map[string]interface{})
+	var pkg map[string]interface{}
+	if err:=json.Unmarshal(raw,&pkg);err!=nil{return nil,err}
+	deps, _ := pkg["dependencies"].(map[string]interface{})
 	if deps==nil{
 		return nil,fmt.Errorf("no dependencies found in package.json")
 	}
 	visited:=map[string]bool{}
 	var out []*NodeDependency
-	for nm,vr:=range deps{
-		str,_:=vr.(string)
-		d,e:=resolveNodeDependency(nm, removeCaretTilde(str), visited)
-		if e==nil&&d!=nil{
-			out=append(out,d)
+	for nm, ver := range deps {
+		str, _ := ver.(string)
+		nd,e:=resolveNodeDependency(nm, removeCaretTilde(str), visited)
+		if e==nil && nd!=nil{
+			out=append(out, nd)
 		}
 	}
 	return out,nil
@@ -130,73 +130,64 @@ func resolveNodeDependency(pkg,ver string, visited map[string]bool)(*NodeDepende
 	if err!=nil{return nil,err}
 	defer resp.Body.Close()
 
-	var regData map[string]interface{}
-	if err:=json.NewDecoder(resp.Body).Decode(&regData);err!=nil{return nil,err}
+	var data map[string]interface{}
+	if err:=json.NewDecoder(resp.Body).Decode(&data);err!=nil{return nil,err}
 	if ver==""{
-		if dist,ok:=regData["dist-tags"].(map[string]interface{});ok{
-			if lat, ok:=dist["latest"].(string);ok{
+		if dist,ok:=data["dist-tags"].(map[string]interface{});ok{
+			if lat,ok:=dist["latest"].(string);ok{
 				ver=lat
 			}
 		}
 	}
 	license:="Unknown"
 	var trans []*NodeDependency
-	if vs,ok:=regData["versions"].(map[string]interface{});ok{
+	if vs,ok:=data["versions"].(map[string]interface{});ok{
 		if verData,ok:=vs[ver].(map[string]interface{});ok{
 			license=findNpmLicense(verData)
 			if deps,ok:=verData["dependencies"].(map[string]interface{});ok{
-				for dname,dver:=range deps{
-					str,_:=dver.(string)
-					nd,ee:=resolveNodeDependency(dname,removeCaretTilde(str),visited)
-					if ee==nil&&nd!=nil{
-						trans=append(trans,nd)
+				for dname, dver:=range deps{
+					dv,_:=dver.(string)
+					ch, e2:=resolveNodeDependency(dname, removeCaretTilde(dv), visited)
+					if e2==nil&&ch!=nil{
+						trans=append(trans,ch)
 					}
 				}
 			}
 		}
 	}
 	if license=="Unknown"{
-		// fallback: curl + grep
 		l2 := fallbackNpmLicenseByCurl(pkg)
 		if l2!=""{
 			license=l2
 		}
 	}
 	return &NodeDependency{
-		Name: pkg, Version:ver, License:license,
-		Details:"https://www.npmjs.com/package/"+pkg,
-		Copyleft:isCopyleft(license),
-		Transitive:trans,
-		Language:"node",
+		Name: pkg, Version: ver, License: license,
+		Details: "https://www.npmjs.com/package/" + pkg,
+		Copyleft: isCopyleft(license),
+		Transitive: trans,
+		Language: "node",
 	},nil
 }
 
-func findNpmLicense(verData map[string]interface{}) string {
-	if l, ok:=verData["license"].(string); ok && l!="" {
+func findNpmLicense(verData map[string]interface{})string{
+	if l,ok:=verData["license"].(string);ok&&l!=""{
 		return l
 	}
-	if lm,ok:=verData["license"].(map[string]interface{}); ok {
-		if t,ok:=lm["type"].(string); ok && t!="" {
-			return t
-		}
-		if nm,ok:=lm["name"].(string);ok&&nm!=""{
-			return nm
-		}
+	if lm,ok:=verData["license"].(map[string]interface{});ok{
+		if t,ok:=lm["type"].(string);ok&&t!=""{return t}
+		if nm,ok:=lm["name"].(string);ok&&nm!=""{return nm}
 	}
-	if arr,ok:=verData["licenses"].([]interface{}); ok && len(arr)>0 {
+	if arr,ok:=verData["licenses"].([]interface{});ok&&len(arr)>0{
 		if obj,ok:=arr[0].(map[string]interface{});ok{
-			if t,ok:=obj["type"].(string);ok&&t!=""{
-				return t
-			}
-			if nm,ok:=obj["name"].(string);ok&&nm!=""{
-				return nm
-			}
+			if t,ok:=obj["type"].(string);ok&&t!=""{return t}
+			if nm,ok:=obj["name"].(string);ok&&nm!=""{return nm}
 		}
 	}
 	return "Unknown"
 }
 
-// ------------------- Python Dependencies -------------------
+// ----------------- Python Dependencies -----------------
 
 type PythonDependency struct{
 	Name string
@@ -237,7 +228,7 @@ func parsePythonDependencies(path string)([]*PythonDependency,error){
 		results=append(results,&d)
 	}
 	for e:=range errChan{
-		log.Println("Python parse err:", e)
+		log.Println("Python parse error:", e)
 	}
 	return results,nil
 }
@@ -268,7 +259,7 @@ func resolvePythonDependency(pkg,ver string, visited map[string]bool)(*PythonDep
 		license=l
 	}
 	return &PythonDependency{
-		Name:pkg, Version:ver, License:license,
+		Name:pkg,Version:ver,License:license,
 		Details:"https://pypi.org/pypi/"+pkg+"/json",
 		Copyleft:isCopyleft(license),
 		Language:"python",
@@ -319,7 +310,7 @@ func flattenNodeAll(nds []*NodeDependency, parent string)[]FlatDep{
 			Details:nd.Details,Language:nd.Language,Parent:parent,
 		})
 		if len(nd.Transitive)>0{
-			out=append(out,flattenNodeAll(nd.Transitive,nd.Name)...)
+			out=append(out, flattenNodeAll(nd.Transitive, nd.Name)...)
 		}
 	}
 	return out
@@ -333,14 +324,21 @@ func flattenPyAll(pds []*PythonDependency, parent string)[]FlatDep{
 			Details:pd.Details,Language:pd.Language,Parent:parent,
 		})
 		if len(pd.Transitive)>0{
-			out=append(out,flattenPyAll(pd.Transitive,pd.Name)...)
+			out=append(out, flattenPyAll(pd.Transitive, pd.Name)...)
 		}
 	}
 	return out
 }
 
-// Build JSON for collapsible D3
-func buildTreeJSON(node []*NodeDependency,py []*PythonDependency)(string,string,error){
+// Build JSON for Node & Python D3 trees
+func buildTreeJSON(node []*NodeDependency, py []*PythonDependency)(string,string,error){
+	// If no direct node, put a single stub node so the user sees something
+	if len(node)==0{
+		node=[]*NodeDependency{{Name:"No Node dependencies",Version:"",License:"",Details:"",Language:"node"}}
+	}
+	if len(py)==0{
+		py=[]*PythonDependency{{Name:"No Python dependencies",Version:"",License:"",Details:"",Language:"python"}}
+	}
 	nroot:=map[string]interface{}{
 		"Name":"Node.js Dependencies","Version":"","Transitive":node,
 	}
@@ -354,7 +352,7 @@ func buildTreeJSON(node []*NodeDependency,py []*PythonDependency)(string,string,
 	return string(nb),string(pb),nil
 }
 
-// single HTML with 3 pages
+// Single HTML for everything
 type SinglePageData struct{
 	Summary string
 	Deps []FlatDep
@@ -362,35 +360,33 @@ type SinglePageData struct{
 	PythonJSON string
 }
 
-var singleTmpl=`<!DOCTYPE html><html><head><meta charset="UTF-8">
+var singleTemplate=`<!DOCTYPE html><html><head><meta charset="UTF-8">
 <title>Dependency License Report</title>
 <style>
 body{font-family:Arial,sans-serif;margin:20px}
 h1,h2{color:#2c3e50}
-nav a{margin-right:10px;cursor:pointer;color:blue;text-decoration:underline}
-.page{display:none}.page.active{display:block}
 table{width:100%;border-collapse:collapse;margin-bottom:20px}
 th,td{border:1px solid #ddd;padding:8px;text-align:left}
 th{background:#f2f2f2}
+nav a{margin-right:10px;cursor:pointer;color:blue;text-decoration:underline}
 .copyleft{background:#f8d7da;color:#721c24}
 .non-copyleft{background:#d4edda;color:#155724}
-.unknown{background:#fff3cd;color:#856404}
-</style></head>
+.unknown{background:#ffff99;color:#333}
+.graph-container{
+  margin:0 auto;
+  width:1200px; /* Center the graph and give more space */
+}
+</style>
+</head>
 <body>
 <h1>Dependency License Report</h1>
-<nav>
-<a onclick="showPage('summary')">Summary</a>
-<a onclick="showPage('node')">Node Graph</a>
-<a onclick="showPage('python')">Python Graph</a>
-</nav>
 
-<div id="summary" class="page active">
 <h2>Summary</h2>
 <p>{{.Summary}}</p>
+
 <h2>Dependencies</h2>
 <table>
-<tr><th>Name</th><th>Version</th><th>License</th><th>Parent</th>
-<th>Language</th><th>Details</th></tr>
+<tr><th>Name</th><th>Version</th><th>License</th><th>Parent</th><th>Language</th><th>Details</th></tr>
 {{range .Deps}}
 <tr>
 <td>{{.Name}}</td>
@@ -403,101 +399,139 @@ th{background:#f2f2f2}
 </tr>
 {{end}}
 </table>
-</div>
 
-<div id="node" class="page">
+<div class="graph-container">
 <h2>Node.js Collapsible Tree</h2>
 <div id="nodeGraph"></div>
 </div>
 
-<div id="python" class="page">
+<br><br>
+
+<div class="graph-container">
 <h2>Python Collapsible Tree</h2>
 <div id="pythonGraph"></div>
 </div>
 
 <script src="https://d3js.org/d3.v6.min.js"></script>
 <script>
-function showPage(pg){
-document.getElementById("summary").classList.remove("active");
-document.getElementById("node").classList.remove("active");
-document.getElementById("python").classList.remove("active");
-document.getElementById(pg).classList.add("active");
+function collapsibleTree(data, selector){
+  console.log("Graph data for", selector, data);
+  // Large width & height so we can see big trees
+  var margin={top:20,right:200,bottom:30,left:200},
+      width=1200-margin.left-margin.right,
+      height=800-margin.top-margin.bottom;
+
+  var svg=d3.select(selector).append("svg")
+    .attr("width",width+margin.left+margin.right)
+    .attr("height",height+margin.top+margin.bottom)
+    .append("g").attr("transform","translate("+margin.left+","+margin.top+")");
+
+  var treemap=d3.tree().size([height,width]);
+  var root=d3.hierarchy(data,function(d){return d.Transitive;});
+  root.x0=height/2; root.y0=0;
+
+  update(root);
+
+  function update(source){
+    var treeData=treemap(root);
+    var nodes=treeData.descendants(),
+        links=nodes.slice(1);
+
+    // Increase horizontal spacing to reduce overlap
+    nodes.forEach(function(d){d.y=d.depth*300;});
+
+    // Node group
+    var node=svg.selectAll("g.node").data(nodes,function(d){return d.id||(d.id=Math.random());});
+    var nodeEnter=node.enter().append("g")
+      .attr("class","node")
+      .attr("transform",function(d){return"translate("+source.y0+","+source.x0+")";})
+      .on("click",click);
+
+    nodeEnter.append("circle")
+      .attr("class","node")
+      .attr("r",1e-6)
+      .style("fill",function(d){return d._children?"lightsteelblue":"#fff"})
+      .style("stroke","steelblue")
+      .style("stroke-width","3");
+
+    nodeEnter.append("text")
+      .attr("dy",".35em")
+      .attr("x",function(d){return d.children||d._children?-13:13;})
+      .style("text-anchor",function(d){return d.children||d._children?"end":"start";})
+      .text(function(d){return d.data.Name+"@"+d.data.Version;});
+
+    var nodeUpdate=nodeEnter.merge(node);
+    nodeUpdate.transition().duration(200)
+      .attr("transform",function(d){return"translate("+d.y+","+d.x+")";});
+    nodeUpdate.select("circle.node").attr("r",10)
+      .style("fill",function(d){return d._children?"lightsteelblue":"#fff"});
+
+    // remove old
+    var nodeExit=node.exit().transition().duration(200)
+      .attr("transform",function(d){return"translate("+source.y+","+source.x+")";})
+      .remove();
+    nodeExit.select("circle").attr("r",1e-6);
+
+    // Links
+    var link=svg.selectAll("path.link").data(links,function(d){return d.id||(d.id=Math.random());});
+    var linkEnter=link.enter().insert("path","g").attr("class","link")
+      .attr("d",function(d){
+        var o={x:source.x0,y:source.y0}; return diag(o,o);
+      });
+    var linkUpdate=linkEnter.merge(link);
+    linkUpdate.transition().duration(200)
+      .attr("d",function(d){return diag(d,d.parent);});
+    link.exit().transition().duration(200)
+      .attr("d",function(d){
+        var o={x:source.x,y:source.y};return diag(o,o);
+      }).remove();
+
+    nodes.forEach(function(d){
+      d.x0=d.x; d.y0=d.y;
+    });
+    function diag(s,d){
+      return"M"+s.y+","+s.x
+        +"C"+(s.y+50)+","+s.x
+        +" "+(d.y+50)+","+d.x
+        +" "+d.y+","+d.x;
+    }
+  }
+  function click(ev,d){
+    if(d.children){d._children=d.children;d.children=null;}else{d.children=d._children;d._children=null;}
+    update(d);
+  }
 }
-function collapsibleTree(data, sel){
-var m={top:20,right:90,bottom:30,left:90}, w=660-m.left-m.right,h=500-m.top-m.bottom;
-var svg=d3.select(sel).append("svg").attr("width",w+m.left+m.right)
-.attr("height",h+m.top+m.bottom)
-.append("g").attr("transform","translate("+m.left+","+m.top+")");
-var tree=d3.tree().size([h,w]);
-var root=d3.hierarchy(data,function(d){return d.Transitive;});
-root.x0=h/2;root.y0=0;update(root);
-function update(source){
-var treed=tree(root),nodes=treed.descendants(),links=nodes.slice(1);
-nodes.forEach(function(d){d.y=d.depth*180});
-var node=svg.selectAll("g.node").data(nodes,function(d){return d.id||(d.id=Math.random())});
-var ne=node.enter().append("g").attr("class","node")
-.attr("transform",function(d){return"translate("+source.y0+","+source.x0+")";})
-.on("click",click);
-ne.append("circle").attr("class","node").attr("r",1e-6)
-.style("fill",function(d){return d._children?"lightsteelblue":"#fff"})
-.style("stroke","steelblue").style("stroke-width","3");
-ne.append("text").attr("dy",".35em")
-.attr("x",function(d){return d.children||d._children?-13:13;})
-.style("text-anchor",function(d){return d.children||d._children?"end":"start";})
-.text(function(d){return d.data.Name+"@"+d.data.Version;});
-var nodeUpdate=ne.merge(node);
-nodeUpdate.transition().duration(200)
-.attr("transform",function(d){return"translate("+d.y+","+d.x+")";});
-nodeUpdate.select("circle.node").attr("r",10)
-.style("fill",function(d){return d._children?"lightsteelblue":"#fff"});
-var nodeExit=node.exit().transition().duration(200)
-.attr("transform",function(d){return"translate("+source.y+","+source.x+")";})
-.remove();
-nodeExit.select("circle").attr("r",1e-6);
-var link=svg.selectAll("path.link").data(links,function(d){return d.id||(d.id=Math.random())});
-var linkEnter=link.enter().insert("path","g").attr("class","link")
-.attr("d",function(d){var o={x:source.x0,y:source.y0};return diag(o,o)});
-var linkUpdate=linkEnter.merge(link);
-linkUpdate.transition().duration(200).attr("d",function(d){return diag(d,d.parent)});
-link.exit().transition().duration(200).attr("d",function(d){
-var o={x:source.x,y:source.y};return diag(o,o)}).remove();
-nodes.forEach(function(d){d.x0=d.x;d.y0=d.y});
-function diag(s,d){return"M"+s.y+","+s.x
-+"C"+(s.y+50)+","+s.x+" "+(d.y+50)+","+d.x+" "+d.y+","+d.x}
-}
-function click(ev,d){
-if(d.children){d._children=d.children;d.children=null;}
-else{d.children=d._children;d._children=null;}
-update(d);
-}
-}
-var nodeData=NODE_JSON;
-var pythonData=PYTHON_JSON;
+
+// Build the trees
+var nodeData = NODE_JSON;
+var pythonData= PYTHON_JSON;
+
 collapsibleTree(nodeData,"#nodeGraph");
 collapsibleTree(pythonData,"#pythonGraph");
 </script>
-</body></html>`
+</body>
+</html>`
 
 func generateSingleHTML(data SinglePageData) error {
-	tmpl, err := template.New("single").Funcs(template.FuncMap{
+	t, err := template.New("single").Funcs(template.FuncMap{
 		"isCopyleft": isCopyleft,
-	}).Parse(singleTmpl)
+	}).Parse(singleTemplate)
 	if err!=nil{return err}
-	f, err2 := os.Create("dependency-license-report.html")
-	if err2!=nil{return err2}
+	f, e2 := os.Create("dependency-license-report.html")
+	if e2!=nil{return e2}
 	defer f.Close()
-	return tmpl.Execute(f, data)
+	return t.Execute(f, data)
 }
 
 func main(){
-	// 1. Node parse
+	// 1) parse Node
 	nf:=findFile(".","package.json")
 	var nodeDeps []*NodeDependency
 	if nf!=""{
 		nd,err:=parseNodeDependencies(nf)
 		if err==nil{nodeDeps=nd}else{log.Println("Node parse error:",err)}
 	}
-	// 2. Python parse
+	// 2) parse Python
 	pf:=findFile(".","requirements.txt")
 	if pf==""{pf=findFile(".","requirement.txt")}
 	var pyDeps []*PythonDependency
@@ -505,33 +539,35 @@ func main(){
 		pd,err:=parsePythonDependencies(pf)
 		if err==nil{pyDeps=pd}else{log.Println("Python parse error:",err)}
 	}
-	// 3. Flatten
+	// 3) flatten
 	fn:=flattenNodeAll(nodeDeps,"Direct")
 	fp:=flattenPyAll(pyDeps,"Direct")
-	allFlat:=append(fn,fp...)
+	allDeps:=append(fn,fp...)
+	// count copyleft
 	copyleftCount:=0
-	for _,fd:=range allFlat{
+	for _,fd:=range allDeps{
 		if isCopyleft(fd.License){copyleftCount++}
 	}
-	// summary
-	sum:=fmt.Sprintf("%d direct Node.js deps, %d direct Python deps, copyleft:%d",
+	summary:=fmt.Sprintf("%d direct Node.js deps, %d direct Python deps, copyleft:%d",
 		len(nodeDeps), len(pyDeps), copyleftCount)
-	// 4. Build JSON for collapsible
-	njson, pjson, err := buildTreeJSON(nodeDeps, pyDeps)
+
+	// 4) build JSON for collapsible
+	njson,pjson,err:=buildTreeJSON(nodeDeps,pyDeps)
 	if err!=nil{
-		log.Println("Error building JSON:",err)
-		njson,pjson="[]","[]"
+		log.Println("Error building JSON for trees:",err)
+		njson,pjson="{}","{}"
 	}
-	// 5. Single HTML with “pages”
+
 	sp := SinglePageData{
-		Summary: sum,
-		Deps: allFlat,
+		Summary: summary,
+		Deps: allDeps,
 		NodeJSON: njson,
 		PythonJSON: pjson,
 	}
+
 	if e:=generateSingleHTML(sp); e!=nil{
-		log.Println("Error generating HTML:", e)
+		log.Println("Error generating single HTML:", e)
 		os.Exit(1)
 	}
-	fmt.Println("dependency-license-report.html generated with 3-page layout. Curl+grep fallback used for Node licenses.")
+	fmt.Println("dependency-license-report.html generated. Graphs are centered with bigger width, fallback license logic used for Node.")
 }
