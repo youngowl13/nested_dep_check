@@ -5,97 +5,21 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"io"
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"io/fs"
 )
 
-// ----------------------------------------------------------------------
-// 1) Check or Install Python on Ubuntu
-// ----------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// 1) Node approach: multi-line fallback + sub-sub from registry
+// ----------------------------------------------------------------------------
 
-// ensurePythonOnUbuntu checks if python3 is installed; if not, we do sudo apt-get update & install.
-func ensurePythonOnUbuntu() error {
-	// 1) Check presence of python3
-	_, err := exec.LookPath("python3")
-	if err == nil {
-		log.Println("python3 is already installed.")
-		return nil
-	}
-
-	log.Println("python3 not found, installing on Ubuntu via apt-get ...")
-	cmd := exec.Command("sudo", "apt-get", "update")
-	if e := cmd.Run(); e!=nil {
-		return fmt.Errorf("sudo apt-get update failed: %v", e)
-	}
-	cmd2 := exec.Command("sudo", "apt-get", "install", "-y", "python3", "python3-venv", "python3-pip")
-	if e := cmd2.Run(); e!=nil {
-		return fmt.Errorf("sudo apt-get install python3 python3-venv python3-pip failed: %v", e)
-	}
-	return nil
-}
-
-// ----------------------------------------------------------------------
-// 2) Copyleft + license-line helpers
-// ----------------------------------------------------------------------
-
-func isCopyleft(license string) bool {
-	copyleftLicenses := []string{
-		"GPL","GNU GENERAL PUBLIC LICENSE","LGPL","GNU LESSER GENERAL PUBLIC LICENSE",
-		"AGPL","GNU AFFERO GENERAL PUBLIC LICENSE","MPL","MOZILLA PUBLIC LICENSE",
-		"CC-BY-SA","CREATIVE COMMONS ATTRIBUTION-SHAREALIKE","EPL","ECLIPSE PUBLIC LICENSE",
-		"OFL","OPEN FONT LICENSE","CPL","COMMON PUBLIC LICENSE","OSL","OPEN SOFTWARE LICENSE",
-	}
-	up := strings.ToUpper(license)
-	for _, kw := range copyleftLicenses {
-		if strings.Contains(up, kw) {
-			return true
-		}
-	}
-	return false
-}
-
-func parseLicenseLine(line string) string {
-	known := []string{
-		"MIT","ISC","BSD","APACHE","ARTISTIC","ZLIB","WTFPL","CDDL","UNLICENSE","EUPL",
-		"MPL","CC0","LGPL","AGPL","BSD-2-CLAUSE","BSD-3-CLAUSE","X11",
-	}
-	up := strings.ToUpper(line)
-	for _, kw := range known {
-		if strings.Contains(up, kw) {
-			return kw
-		}
-	}
-	return ""
-}
-
-// remove ^ or ~ from version
-func removeCaretTilde(ver string) string {
-	ver = strings.TrimSpace(ver)
-	return strings.TrimLeft(ver, "^~")
-}
-
-func findFile(root, target string) string {
-	var found string
-	filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err==nil && d.Name()==target {
-			found= path
-			return fs.SkipDir
-		}
-		return nil
-	})
-	return found
-}
-
-// ----------------------------------------------------------------------
-// 3) Node logic: parse package.json => registry => fallback
-// ----------------------------------------------------------------------
-
+// NodeDependency is your standard Node sub-dep structure
 type NodeDependency struct {
 	Name       string
 	Version    string
@@ -106,10 +30,11 @@ type NodeDependency struct {
 	Language   string
 }
 
+// fallbackNpmLicenseMultiLine checks up to 10 lines after "license" on npmjs.com
 func fallbackNpmLicenseMultiLine(pkgName string) string {
 	url := "https://www.npmjs.com/package/" + pkgName
 	resp, err := http.Get(url)
-	if err!=nil || resp.StatusCode != 200 {
+	if err != nil || resp.StatusCode != 200 {
 		return ""
 	}
 	defer resp.Body.Close()
@@ -117,9 +42,9 @@ func fallbackNpmLicenseMultiLine(pkgName string) string {
 	var lines []string
 	sc := bufio.NewScanner(resp.Body)
 	for sc.Scan() {
-		lines= append(lines, sc.Text())
+		lines = append(lines, sc.Text())
 	}
-	if sc.Err()!=nil {
+	if sc.Err() != nil {
 		return ""
 	}
 	for i:=0; i< len(lines); i++ {
@@ -128,9 +53,9 @@ func fallbackNpmLicenseMultiLine(pkgName string) string {
 			if lic!="" {
 				return lic
 			}
-			for j:= i+1; j< len(lines) && j<=i+10; j++ {
+			for j:=i+1; j< len(lines) && j<=i+10; j++ {
 				lic2:= parseLicenseLine(lines[j])
-				if lic2!=""{
+				if lic2!="" {
 					return lic2
 				}
 			}
@@ -164,22 +89,22 @@ func findNpmLicense(verData map[string]interface{}) string {
 	return "Unknown"
 }
 
-func parseNodeDependencies(path string) ([]*NodeDependency, error) {
-	raw,err:= os.ReadFile(path)
+func parseNodeDependencies(nodeFile string) ([]*NodeDependency,error){
+	raw, err := os.ReadFile(nodeFile)
 	if err!=nil{return nil,err}
 	var pkg map[string]interface{}
-	if e:= json.Unmarshal(raw,&pkg); e!=nil{
+	if e:= json.Unmarshal(raw,&pkg); e!=nil {
 		return nil,e
 	}
 	deps, _ := pkg["dependencies"].(map[string]interface{})
-	if deps==nil {
+	if deps==nil{
 		return nil, fmt.Errorf("no dependencies found in package.json")
 	}
 	visited := make(map[string]bool)
 	var results []*NodeDependency
 	for nm, ver := range deps {
 		vstr,_:= ver.(string)
-		nd,e := resolveNodeDependency(nm, removeCaretTilde(vstr), visited)
+		nd, e:= resolveNodeDependency(nm, removeCaretTilde(vstr), visited)
 		if e==nil && nd!=nil {
 			results= append(results, nd)
 		}
@@ -189,14 +114,14 @@ func parseNodeDependencies(path string) ([]*NodeDependency, error) {
 
 func resolveNodeDependency(pkgName, version string, visited map[string]bool)(*NodeDependency,error){
 	key:= pkgName+"@"+version
-	if visited[key] {
+	if visited[key]{
 		return nil,nil
 	}
 	visited[key]=true
 
-	regURL := "https://registry.npmjs.org/"+pkgName
+	regURL:= "https://registry.npmjs.org/"+pkgName
 	resp,err:= http.Get(regURL)
-	if err!=nil{ return nil, err }
+	if err!=nil{ return nil,err }
 	defer resp.Body.Close()
 
 	var data map[string]interface{}
@@ -212,14 +137,13 @@ func resolveNodeDependency(pkgName, version string, visited map[string]bool)(*No
 	}
 	license := "Unknown"
 	var trans []*NodeDependency
-
 	if vs,ok:= data["versions"].(map[string]interface{}); ok {
 		if verData,ok:= vs[version].(map[string]interface{}); ok {
 			license= findNpmLicense(verData)
 			if deps,ok:= verData["dependencies"].(map[string]interface{}); ok {
-				for subName, subVer := range deps {
-					sv,_:= subVer.(string)
-					ch,e2:= resolveNodeDependency(subName, removeCaretTilde(sv), visited)
+				for dName, dVer := range deps {
+					sv,_:= dVer.(string)
+					ch, e2:= resolveNodeDependency(dName, removeCaretTilde(sv), visited)
 					if e2==nil && ch!=nil {
 						trans= append(trans, ch)
 					}
@@ -232,28 +156,24 @@ func resolveNodeDependency(pkgName, version string, visited map[string]bool)(*No
 			license= fb
 		}
 	}
-	nd:= &NodeDependency{
-		Name: pkgName, Version: version, 
+	nd := &NodeDependency{
+		Name: pkgName,
+		Version: version,
 		License: license,
-		Details: "https://www.npmjs.com/package/"+pkgName,
+		Details: "https://www.npmjs.com/package/"+pkgName, 
 		Copyleft: isCopyleft(license),
 		Transitive: trans,
-		Language:"node",
+		Language: "node",
 	}
 	return nd,nil
 }
 
-// ----------------------------------------------------------------------
-// 4) Python approach: create venv, install pipdeptree, parse sub-sub BFS
-// ----------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// 2) Python approach: parse requirements, then sub-sub using requires_dist from PyPI
+// ----------------------------------------------------------------------------
 
-type PyPackageNode struct {
-	Package struct {
-		Key string `json:"key"`
-		InstalledVersion string `json:"installed_version"`
-	} `json:"package"`
-	Dependencies []PyPackageNode `json:"dependencies"`
-}
+// We'll do the BFS from your direct lines in requirement(s).txt
+// Then for each pkg, we read "requires_dist" for sub‐dependencies, parse them, etc.
 
 type PythonDependency struct {
 	Name       string
@@ -265,95 +185,182 @@ type PythonDependency struct {
 	Language   string
 }
 
-// create a local venv => pip install -r => pip install pipdeptree => pipdeptree --json-tree => parse BFS
-func parsePythonDependencies(reqFile string)([]*PythonDependency, error){
-	// We'll place the venv in venvpython
-	venvDir := "venvpython"
-	if _,err:= os.Stat(venvDir); err==nil {
-		log.Printf("Removing existing venv: %s", venvDir)
-		os.RemoveAll(venvDir)
-	}
-	// create venv: python3 -m venv venvpython
-	cmdVenv := exec.Command("python3","-m","venv", venvDir)
-	if e:= cmdVenv.Run(); e!=nil {
-		return nil, fmt.Errorf("error creating venv: %v", e)
-	}
+func parsePythonDependencies(reqFile string) ([]*PythonDependency, error) {
+	f,err:= os.Open(reqFile)
+	if err!=nil {return nil, err}
+	defer f.Close()
 
-	pipPath := filepath.Join(venvDir,"bin","pip")
-	if _,err:= os.Stat(pipPath); err!=nil{
-		return nil, fmt.Errorf("pip not found in venv: %v", err)
-	}
+	reqs,err := parseRequirements(f)
+	if err!=nil{return nil,err}
 
-	// install from requirements
-	cmdInstall := exec.Command(pipPath, "install", "-r", reqFile)
-	if e:= cmdInstall.Run(); e!=nil{
-		return nil, fmt.Errorf("pip install -r %s failed: %v", reqFile, e)
-	}
-
-	// install pipdeptree
-	cmdDepTree := exec.Command(pipPath, "install","pipdeptree")
-	if e:= cmdDepTree.Run(); e!=nil{
-		return nil, fmt.Errorf("pip install pipdeptree failed: %v", e)
-	}
-
-	// pipdeptree --json-tree
-	pipdeptreeExe := filepath.Join(venvDir,"bin","pipdeptree")
-	out, err := exec.Command(pipdeptreeExe,"--json-tree").Output()
-	if err!=nil{
-		return nil, fmt.Errorf("error calling pipdeptree: %v", err)
-	}
-
-	var topNodes []PyPackageNode
-	if e:= json.Unmarshal(out,&topNodes); e!=nil{
-		return nil, fmt.Errorf("unmarshal pipdeptree: %v", e)
-	}
-
-	cache := make(map[string]*PythonDependency)
 	visited := make(map[string]bool)
 	var results []*PythonDependency
-	for _, tn := range topNodes {
-		pd := buildPyDepTree(tn, cache, visited)
-		if pd!=nil {
+	for _, r := range reqs {
+		pd, e2 := resolvePythonDependency(r.name, r.version, visited)
+		if e2==nil && pd!=nil {
 			results= append(results, pd)
+		} else if e2!=nil {
+			log.Println("Python parse error for",r.name,"=>", e2)
 		}
 	}
 	return results,nil
 }
 
-func buildPyDepTree(node PyPackageNode, cache map[string]*PythonDependency, visited map[string]bool) *PythonDependency {
-	nameUp := strings.ToUpper(node.Package.Key)
-	if visited[nameUp] {
-		if p,ok:= cache[nameUp]; ok {
-			return p
+type requirement struct { name,version string }
+func parseRequirements(r io.Reader)([]requirement,error){
+	raw,err:= io.ReadAll(r)
+	if err!=nil{return nil, err}
+	lines := strings.Split(string(raw),"\n")
+	var out []requirement
+	for _, line := range lines {
+		sline:= strings.TrimSpace(line)
+		if sline==""|| strings.HasPrefix(sline,"#"){
+			continue
 		}
-		return nil
-	}
-	visited[nameUp]=true
-
-	license := "Unknown"  // If you'd like, you can parse local METADATA for real license.
-
-	py := &PythonDependency{
-		Name: node.Package.Key,
-		Version: node.Package.InstalledVersion,
-		License: license,
-		Details: "local venv + pipdeptree",
-		Copyleft: isCopyleft(license),
-		Language:"python",
-	}
-	cache[nameUp]= py
-
-	for _, child := range node.Dependencies {
-		chDep:= buildPyDepTree(child, cache, visited)
-		if chDep!=nil {
-			py.Transitive= append(py.Transitive,chDep)
+		p:= strings.Split(sline,"==")
+		if len(p)!=2 {
+			p= strings.Split(sline,">=")
+			if len(p)!=2{
+				log.Println("Invalid python requirement line:", sline)
+				continue
+			}
 		}
+		nm := strings.TrimSpace(p[0])
+		ver:= strings.TrimSpace(p[1])
+		out= append(out, requirement{ nm, ver })
 	}
-	return py
+	return out,nil
 }
 
-// ----------------------------------------------------------------------
-// 5) Flatten + <details> expansions => single HTML
-// ----------------------------------------------------------------------
+// We'll do BFS from the direct package => parse pypi => parse requires_dist => sub-sub
+func resolvePythonDependency(pkgName, version string, visited map[string]bool)(*PythonDependency,error){
+	key:= strings.ToLower(pkgName)+"@"+version
+	if visited[key]{return nil,nil}
+	visited[key]= true
+
+	url:= "https://pypi.org/pypi/"+pkgName+"/json"
+	resp,err:= http.Get(url)
+	if err!=nil{return nil,err}
+	defer resp.Body.Close()
+
+	if resp.StatusCode!=200{
+		return nil, fmt.Errorf("PyPI returned status:%d", resp.StatusCode)
+	}
+	var data map[string]interface{}
+	if e:= json.NewDecoder(resp.Body).Decode(&data); e!=nil{
+		return nil,e
+	}
+	info, _:= data["info"].(map[string]interface{})
+	if info==nil{
+		return nil, fmt.Errorf("no 'info' found for %s", pkgName)
+	}
+	if version=="" {
+		if v2,ok:= info["version"].(string); ok {
+			version= v2
+		}
+	}
+	license := "Unknown"
+	if l,ok:= info["license"].(string); ok && l!="" {
+		license= l
+	}
+	// sub-sub BFS => parse requires_dist if present
+	var trans []*PythonDependency
+	if distArr,ok:= info["requires_dist"].([]interface{}); ok && len(distArr)>0 {
+		for _, x:= range distArr {
+			line, ok := x.(string)
+			if !ok{continue}
+			subName, subVer := parsePyRequiresDistLine(line) // e.g. "requests (>=2.0)" => name="requests", version=">=2.0"
+			if subName=="" {continue}
+			ch, e2 := resolvePythonDependency(subName, subVer, visited)
+			if e2==nil && ch!=nil{
+				trans= append(trans, ch)
+			}
+		}
+	}
+
+	py := &PythonDependency{
+		Name: pkgName,
+		Version: version,
+		License: license,
+		Details: "https://pypi.org/project/"+pkgName,
+		Copyleft: isCopyleft(license),
+		Transitive: trans,
+		Language: "python",
+	}
+	return py,nil
+}
+
+// parsePyRequiresDistLine tries to parse lines like "requests (>=2.0)" => "requests",">=2.0"
+func parsePyRequiresDistLine(line string) (string, string) {
+	// typically "pkgName (>=1.2)", or "pkgName [extra] (==1.3)"
+	line = strings.TrimSpace(line)
+	// remove extras => "requests (>=2.20)"
+	// if there's a '[' portion => e.g. "requests[security]" => we'll strip that out
+	i := strings.Index(line, "[")
+	if i>0 {
+		// e.g. "requests[security]"
+		j := strings.Index(line, "]")
+		if j>i {
+			// remove [something]
+			line = line[:i] + line[j+1:]
+		}
+		line = strings.TrimSpace(line)
+	}
+	// now we might have "requests (>=2.20)"
+	// find "(" 
+	i2 := strings.Index(line,"(")
+	if i2<0 {
+		// no version
+		return line, ""
+	}
+	name := strings.TrimSpace(line[:i2])
+	inside := strings.Trim(line[i2:], " ()")
+	// e.g. ">=2.20"
+	return name, inside
+}
+
+// ----------------------------------------------------------------------------
+// 3) Shared: isCopyleft, parseLicenseLine, etc. 
+//    We define them below for completeness
+// ----------------------------------------------------------------------------
+
+func isCopyleft(lic string) bool {
+	copyleftLicenses := []string{
+		"GPL","GNU GENERAL PUBLIC LICENSE","LGPL","GNU LESSER GENERAL PUBLIC LICENSE",
+		"AGPL","GNU AFFERO GENERAL PUBLIC LICENSE","MPL","MOZILLA PUBLIC LICENSE",
+		"CC-BY-SA","CREATIVE COMMONS ATTRIBUTION-SHAREALIKE","EPL","ECLIPSE PUBLIC LICENSE",
+		"OFL","OPEN FONT LICENSE","CPL","COMMON PUBLIC LICENSE","OSL","OPEN SOFTWARE LICENSE",
+	}
+	up := strings.ToUpper(lic)
+	for _, kw := range copyleftLicenses {
+		if strings.Contains(up, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+func parseLicenseLine(line string) string {
+	known := []string{"MIT","ISC","BSD","APACHE","ARTISTIC","ZLIB","WTFPL",
+		"CDDL","UNLICENSE","EUPL","MPL","CC0","LGPL","AGPL","BSD-2-CLAUSE","BSD-3-CLAUSE","X11",
+	}
+	up := strings.ToUpper(line)
+	for _, kw := range known {
+		if strings.Contains(up, kw) {
+			return kw
+		}
+	}
+	return ""
+}
+
+func removeCaretTilde(ver string) string {
+	ver = strings.TrimSpace(ver)
+	return strings.TrimLeft(ver, "^~")
+}
+
+// ----------------------------------------------------------------------------
+// 4) Flatten + <details> expansions => final HTML
+// ----------------------------------------------------------------------------
 
 type FlatDep struct {
 	Name     string
@@ -387,7 +394,7 @@ func flattenPyAll(pds []*PythonDependency, parent string) []FlatDep {
 			Name: pd.Name, Version: pd.Version, License: pd.License,
 			Details: pd.Details, Language: pd.Language, Parent: parent,
 		})
-		if len(pd.Transitive)>0 {
+		if len(pd.Transitive)>0{
 			out= append(out, flattenPyAll(pd.Transitive, pd.Name)...)
 		}
 	}
@@ -403,7 +410,7 @@ func buildNodeTreeHTML(nd *NodeDependency) string {
 	sb.WriteString("</summary>\n")
 	if len(nd.Transitive)>0 {
 		sb.WriteString("<ul>\n")
-		for _,ch:= range nd.Transitive {
+		for _, ch:= range nd.Transitive {
 			sb.WriteString("<li>")
 			sb.WriteString(buildNodeTreeHTML(ch))
 			sb.WriteString("</li>\n")
@@ -413,19 +420,18 @@ func buildNodeTreeHTML(nd *NodeDependency) string {
 	sb.WriteString("</details>\n")
 	return sb.String()
 }
-
 func buildNodeTreesHTML(nodes []*NodeDependency) string {
-	if len(nodes)==0 {
+	if len(nodes)==0{
 		return "<p>No Node dependencies found.</p>"
 	}
 	var sb strings.Builder
-	for _, nd:= range nodes {
+	for _, nd := range nodes {
 		sb.WriteString(buildNodeTreeHTML(nd))
 	}
 	return sb.String()
 }
 
-// Python expansions sub-sub BFS
+// Python expansions
 func buildPythonTreeHTML(pd *PythonDependency) string {
 	sum := fmt.Sprintf("%s@%s (License: %s)", pd.Name, pd.Version, pd.License)
 	var sb strings.Builder
@@ -445,17 +451,16 @@ func buildPythonTreeHTML(pd *PythonDependency) string {
 	return sb.String()
 }
 func buildPythonTreesHTML(py []*PythonDependency) string {
-	if len(py)==0 {
-		return "<p>No Python dependencies found or installed.</p>"
+	if len(py)==0{
+		return "<p>No Python dependencies found.</p>"
 	}
 	var sb strings.Builder
-	for _, pd:= range py {
+	for _, pd := range py {
 		sb.WriteString(buildPythonTreeHTML(pd))
 	}
 	return sb.String()
 }
 
-// single HTML
 var reportTemplate = `
 <!DOCTYPE html>
 <html>
@@ -463,16 +468,16 @@ var reportTemplate = `
 <meta charset="UTF-8">
 <title>Dependency License Report</title>
 <style>
-body{font-family:Arial,sans-serif;margin:20px;}
-h1,h2{color:#2c3e50;}
-table{width:100%;border-collapse:collapse;margin-bottom:20px;}
-th,td{border:1px solid #ddd;padding:8px;text-align:left;}
-th{background:#f2f2f2;}
-.copyleft{background:#f8d7da;color:#721c24;}
-.non-copyleft{background:#d4edda;color:#155724;}
-.unknown{background:#ffff99;color:#333;}
-details{margin:4px 0;}
-summary{cursor:pointer;font-weight:bold;}
+body{font-family:Arial,sans-serif;margin:20px}
+h1,h2{color:#2c3e50}
+table{width:100%;border-collapse:collapse;margin-bottom:20px}
+th,td{border:1px solid #ddd;padding:8px;text-align:left}
+th{background:#f2f2f2}
+.copyleft{background:#f8d7da;color:#721c24}
+.non-copyleft{background:#d4edda;color:#155724}
+.unknown{background:#ffff99;color:#333}
+details{margin:4px 0}
+summary{cursor:pointer;font-weight:bold}
 </style>
 </head>
 <body>
@@ -500,7 +505,7 @@ summary{cursor:pointer;font-weight:bold;}
   </td>
   <td>{{.Parent}}</td>
   <td>{{.Language}}</td>
-  <td>{{.Details}}</td>
+  <td><a href="{{.Details}}" target="_blank">{{.Details}}</a></td>
 </tr>
 {{end}}
 </table>
@@ -518,64 +523,53 @@ summary{cursor:pointer;font-weight:bold;}
 </html>
 `
 
-// ----------------------------------------------------------------------
-// 7) main
-// ----------------------------------------------------------------------
-
-func main() {
-	// 1) Ensure python3 is installed on Ubuntu
-	err := ensurePythonOnUbuntu()
-	if err!=nil {
-		log.Fatalf("Error ensuring python installed: %v", err)
-	}
-
-	// 2) Node approach
-	nodeFile := findFile(".", "package.json")
+func main(){
+	// 1) Node approach
+	nf := findFile(".", "package.json")
 	var nodeDeps []*NodeDependency
-	if nodeFile != "" {
-		nd, e := parseNodeDependencies(nodeFile)
-		if e==nil {
-			nodeDeps = nd
+	if nf!="" {
+		nd,err := parseNodeDependencies(nf)
+		if err==nil {
+			nodeDeps= nd
 		} else {
-			log.Println("Node parse error:", e)
+			log.Println("Node parse error:", err)
 		}
 	}
 
-	// 3) Python approach: check if we have requirements.txt or requirement.txt
-	pyReq := findFile(".", "requirements.txt")
-	if pyReq=="" {
-		pyReq= findFile(".", "requirement.txt")
+	// 2) Python approach: find "requirements.txt" or "requirement.txt"
+	pf := findFile(".", "requirements.txt")
+	if pf=="" {
+		pf= findFile(".", "requirement.txt")
 	}
 	var pyDeps []*PythonDependency
-	if pyReq!="" {
-		pd, e2 := parsePythonDependencies(pyReq)
-		if e2==nil {
+	if pf!="" {
+		pd, err := parsePythonDependencies(pf)
+		if err==nil {
 			pyDeps= pd
 		} else {
-			log.Println("Python parse error:", e2)
+			log.Println("Python parse error:", err)
 		}
 	}
 
-	// 4) Flatten
+	// 3) Flatten
 	fn := flattenNodeAll(nodeDeps, "Direct")
 	fp := flattenPyAll(pyDeps, "Direct")
 	allDeps := append(fn, fp...)
 
-	// 5) Count copyleft
-	countCleft:=0
-	for _, d:= range allDeps {
+	// 4) Count copyleft
+	cleft:=0
+	for _, d := range allDeps {
 		if isCopyleft(d.License) {
-			countCleft++
+			cleft++
 		}
 	}
-	summary := fmt.Sprintf("%d Node top-level deps, %d Python top-level packages (sub-sub BFS), Copyleft:%d",
-		len(nodeDeps), len(pyDeps), countCleft)
+	summary := fmt.Sprintf("%d Node top-level, %d Python top-level. Found %d copyleft deps.",
+		len(nodeDeps), len(pyDeps), cleft)
 
-	// 6) Build expansions
-	nodeHTML:= buildNodeTreesHTML(nodeDeps)
-	pyHTML  := buildPythonTreesHTML(pyDeps)
+	// 5) Build expansions
+	nodeHTML := buildNodeTreesHTML(nodeDeps)
+	pyHTML   := buildPythonTreesHTML(pyDeps)
 
-	// 7) Data => HTML
 	data := struct{
 		Summary string
 		Deps []FlatDep
@@ -591,22 +585,17 @@ func main() {
 	tmpl, e:= template.New("report").Funcs(template.FuncMap{
 		"isCopyleft": isCopyleft,
 	}).Parse(reportTemplate)
-	if e!=nil {
+	if e!=nil{
 		log.Fatal("Template parse error:", e)
 	}
-
 	out, e2:= os.Create("dependency-license-report.html")
 	if e2!=nil{
 		log.Fatal("Create file error:", e2)
 	}
 	defer out.Close()
 
-	if e3:= tmpl.Execute(out, data); e3!=nil {
+	if e3:= tmpl.Execute(out, data); e3!=nil{
 		log.Fatal("Template exec error:", e3)
 	}
-
-	fmt.Println("dependency-license-report.html generated successfully!")
-	fmt.Println("- On Ubuntu: if python3 missing, we do 'sudo apt-get update/install' automatically.")
-	fmt.Println("- Then create venv, pip install -r, pip install pipdeptree => sub-sub BFS.")
-	fmt.Println("- Node uses your multi-line fallback for sub-sub. Enjoy!")
+	fmt.Println("dependency-license-report.html generated!")
 }
