@@ -37,10 +37,10 @@ func findFile(root, target string) string {
 
 func isCopyleft(license string) bool {
 	copyleftLicenses := []string{
-		"GPL", "GNU GENERAL PUBLIC LICENSE", "LGPL", "GNU LESSER GENERAL PUBLIC LICENSE",
-		"AGPL", "GNU AFFERO GENERAL PUBLIC LICENSE", "MPL", "MOZILLA PUBLIC LICENSE",
-		"CC-BY-SA", "CREATIVE COMMONS ATTRIBUTION-SHAREALIKE", "EPL", "ECLIPSE PUBLIC LICENSE",
-		"OFL", "OPEN FONT LICENSE", "CPL", "COMMON PUBLIC LICENSE", "OSL", "OPEN SOFTWARE LICENSE",
+		"GPL","GNU GENERAL PUBLIC LICENSE","LGPL","GNU LESSER GENERAL PUBLIC LICENSE",
+		"AGPL","GNU AFFERO GENERAL PUBLIC LICENSE","MPL","MOZILLA PUBLIC LICENSE",
+		"CC-BY-SA","CREATIVE COMMONS ATTRIBUTION-SHAREALIKE","EPL","ECLIPSE PUBLIC LICENSE",
+		"OFL","OPEN FONT LICENSE","CPL","COMMON PUBLIC LICENSE","OSL","OPEN SOFTWARE LICENSE",
 	}
 	up := strings.ToUpper(license)
 	for _, kw := range copyleftLicenses {
@@ -53,8 +53,8 @@ func isCopyleft(license string) bool {
 
 func parseLicenseLine(line string) string {
 	known := []string{
-		"MIT", "ISC", "BSD", "APACHE", "ARTISTIC", "ZLIB", "WTFPL", "CDDL", "UNLICENSE", "EUPL",
-		"MPL", "CC0", "LGPL", "AGPL", "BSD-2-CLAUSE", "BSD-3-CLAUSE", "X11",
+		"MIT","ISC","BSD","APACHE","ARTISTIC","ZLIB","WTFPL","CDDL","UNLICENSE","EUPL",
+		"MPL","CC0","LGPL","AGPL","BSD-2-CLAUSE","BSD-3-CLAUSE","X11",
 	}
 	up := strings.ToUpper(line)
 	for _, kw := range known {
@@ -71,7 +71,7 @@ func removeCaretTilde(ver string) string {
 }
 
 // ---------------------------------------------------------------------------
-// 3) Node approach: parse package.json => BFS from registry => fallback
+// 3) Node BFS: parse package.json => sub-sub from registry => fallback
 // ---------------------------------------------------------------------------
 
 type NodeDependency struct {
@@ -228,7 +228,7 @@ func resolveNodeDependency(pkgName, version string, visited map[string]bool) (*N
 
 // ---------------------------------------------------------------------------
 // 4) Python BFS: parse lines => BFS from PyPI => pass "" for subVer
-// plus the new parsePyRequiresDistLine function that discards constraints
+// (with the new parsePyRequiresDistLine that discards constraints, environment markers, etc.)
 // ---------------------------------------------------------------------------
 
 type PythonDependency struct {
@@ -296,14 +296,11 @@ func parseRequirements(r io.Reader) ([]requirement, error) {
 	return out, nil
 }
 
-// Replacing parsePyRequiresDistLine with a simplified approach
-// that extracts only the package name, ignoring constraints, markers, etc.
-
+// parsePyRequiresDistLine => discards environment markers, version constraints
+// to keep only the raw package name
 func parsePyRequiresDistLine(line string) (string, string) {
-	// We discard environment markers, version constraints, etc.
-	// The simplest approach: split on the first non-alphanumeric/underscore/hyphen/dot.
 	parts := strings.FieldsFunc(line, func(r rune) bool {
-		// keep [a-zA-Z0-9._-]
+		// keep [a-zA-Z0-9._-], discard everything else
 		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
 			(r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.' {
 			return false
@@ -374,7 +371,8 @@ func resolvePythonDependency(pkgName, version string, visited map[string]bool) (
 				continue
 			}
 			log.Printf("DEBUG: Resolving transitive dependency: %s (discarded constraints: %s) of %s@%s", subName, subVer, pkgName, version)
-			ch, e2 := resolvePythonDependency(subName, "", visited) // pass "" for version
+			// pass "" for version in BFS call
+			ch, e2 := resolvePythonDependency(subName, "", visited)
 			if e2 != nil {
 				log.Printf("ERROR: Error resolving transitive dependency %s of %s: %v", subName, pkgName, e2)
 			}
@@ -400,6 +398,8 @@ func resolvePythonDependency(pkgName, version string, visited map[string]bool) (
 
 // ---------------------------------------------------------------------------
 // 5) Flatten + <details> expansions => single HTML
+//  **CHANGES**: We set the parent param properly in flattenNodeAll, flattenPyAll
+//  so that transitive dependencies appear with correct Parent name
 // ---------------------------------------------------------------------------
 
 type FlatDep struct {
@@ -415,11 +415,17 @@ type FlatDep struct {
 func flattenNodeAll(nds []*NodeDependency, parent string) []FlatDep {
 	var out []FlatDep
 	for _, nd := range nds {
+		// for each direct child in 'nds', set its parent to the 'parent' param
 		out = append(out, FlatDep{
-			Name: nd.Name, Version: nd.Version, License: nd.License,
-			Details: nd.Details, Language: nd.Language, Parent: parent,
+			Name:    nd.Name,
+			Version: nd.Version,
+			License: nd.License,
+			Details: nd.Details,
+			Language: nd.Language,
+			Parent: parent, // Ensure the parent is set here
 		})
 		if len(nd.Transitive) > 0 {
+			// for each transitive child, we pass nd.Name as the new parent
 			out = append(out, flattenNodeAll(nd.Transitive, nd.Name)...)
 		}
 	}
@@ -431,17 +437,21 @@ func flattenPyAll(pds []*PythonDependency, parent string) []FlatDep {
 	var out []FlatDep
 	for _, pd := range pds {
 		out = append(out, FlatDep{
-			Name: pd.Name, Version: pd.Version, License: pd.License,
-			Details: pd.Details, Language: pd.Language, Parent: parent,
+			Name:    pd.Name,
+			Version: pd.Version,
+			License: pd.License,
+			Details: pd.Details,
+			Language: pd.Language,
+			Parent: parent, // ensure the parent is set here
 		})
 		if len(pd.Transitive) > 0 {
+			// for each transitive child, we pass pd.Name as the new parent
 			out = append(out, flattenPyAll(pd.Transitive, pd.Name)...)
 		}
 	}
 	return out
 }
 
-// expansions for Node BFS
 func buildNodeTreeHTML(nd *NodeDependency) string {
 	sum := fmt.Sprintf("%s@%s (License: %s)", nd.Name, nd.Version, nd.License)
 	var sb strings.Builder
@@ -460,6 +470,7 @@ func buildNodeTreeHTML(nd *NodeDependency) string {
 	sb.WriteString("</details>\n")
 	return sb.String()
 }
+
 func buildNodeTreesHTML(nodes []*NodeDependency) string {
 	if len(nodes) == 0 {
 		return "<p>No Node dependencies found.</p>"
@@ -594,6 +605,7 @@ func main() {
 	}
 
 	// 3) Flatten
+	// The parent param is "Direct" for top-level
 	fn := flattenNodeAll(nodeDeps, "Direct")
 	fp := flattenPyAll(pyDeps, "Direct")
 	allDeps := append(fn, fp...)
@@ -605,14 +617,13 @@ func main() {
 			copyleftCount++
 		}
 	}
-	summary := fmt.Sprintf("Node top-level: %d, Python top-level: %d, Copyleft:%d",
+	summary := fmt.Sprintf("Node top-level: %d, Python top-level: %d, Copyleft: %d",
 		len(nodeDeps), len(pyDeps), copyleftCount)
 
-	// 5) expansions
+	// 5) expansions for the nested <details>
 	nodeHTML := buildNodeTreesHTML(nodeDeps)
 	pyHTML := buildPythonTreesHTML(pyDeps)
 
-	// final data
 	data := struct {
 		Summary string
 		Deps    []FlatDep
