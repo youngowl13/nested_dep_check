@@ -37,10 +37,10 @@ func findFile(root, target string) string {
 
 func isCopyleft(license string) bool {
 	copyleftLicenses := []string{
-		"GPL","GNU GENERAL PUBLIC LICENSE","LGPL","GNU LESSER GENERAL PUBLIC LICENSE",
-		"AGPL","GNU AFFERO GENERAL PUBLIC LICENSE","MPL","MOZILLA PUBLIC LICENSE",
-		"CC-BY-SA","CREATIVE COMMONS ATTRIBUTION-SHAREALIKE","EPL","ECLIPSE PUBLIC LICENSE",
-		"OFL","OPEN FONT LICENSE","CPL","COMMON PUBLIC LICENSE","OSL","OPEN SOFTWARE LICENSE",
+		"GPL", "GNU GENERAL PUBLIC LICENSE", "LGPL", "GNU LESSER GENERAL PUBLIC LICENSE",
+		"AGPL", "GNU AFFERO GENERAL PUBLIC LICENSE", "MPL", "MOZILLA PUBLIC LICENSE",
+		"CC-BY-SA", "CREATIVE COMMONS ATTRIBUTION-SHAREALIKE", "EPL", "ECLIPSE PUBLIC LICENSE",
+		"OFL", "OPEN FONT LICENSE", "CPL", "COMMON PUBLIC LICENSE", "OSL", "OPEN SOFTWARE LICENSE",
 	}
 	up := strings.ToUpper(license)
 	for _, kw := range copyleftLicenses {
@@ -53,8 +53,8 @@ func isCopyleft(license string) bool {
 
 func parseLicenseLine(line string) string {
 	known := []string{
-		"MIT","ISC","BSD","APACHE","ARTISTIC","ZLIB","WTFPL","CDDL","UNLICENSE","EUPL",
-		"MPL","CC0","LGPL","AGPL","BSD-2-CLAUSE","BSD-3-CLAUSE","X11",
+		"MIT", "ISC", "BSD", "APACHE", "ARTISTIC", "ZLIB", "WTFPL", "CDDL", "UNLICENSE", "EUPL",
+		"MPL", "CC0", "LGPL", "AGPL", "BSD-2-CLAUSE", "BSD-3-CLAUSE", "X11",
 	}
 	up := strings.ToUpper(line)
 	for _, kw := range known {
@@ -71,7 +71,7 @@ func removeCaretTilde(ver string) string {
 }
 
 // ---------------------------------------------------------------------------
-// 3) Node approach: parse package.json => BFS => fallback
+// 3) Node approach: parse package.json => BFS from registry => fallback
 // ---------------------------------------------------------------------------
 
 type NodeDependency struct {
@@ -118,23 +118,23 @@ func fallbackNpmLicenseMultiLine(pkgName string) string {
 }
 
 func findNpmLicense(verData map[string]interface{}) string {
-	if l,ok:= verData["license"].(string); ok && l!="" {
+	if l, ok := verData["license"].(string); ok && l != "" {
 		return l
 	}
-	if lm,ok:= verData["license"].(map[string]interface{}); ok {
-		if t,ok:= lm["type"].(string); ok && t!="" {
+	if lm, ok := verData["license"].(map[string]interface{}); ok {
+		if t, ok := lm["type"].(string); ok && t != "" {
 			return t
 		}
-		if nm,ok:= lm["name"].(string); ok && nm!="" {
+		if nm, ok := lm["name"].(string); ok && nm != "" {
 			return nm
 		}
 	}
-	if arr,ok:= verData["licenses"].([]interface{}); ok && len(arr)>0 {
-		if obj,ok:= arr[0].(map[string]interface{}); ok {
-			if t,ok:= obj["type"].(string); ok && t!="" {
+	if arr, ok := verData["licenses"].([]interface{}); ok && len(arr) > 0 {
+		if obj, ok := arr[0].(map[string]interface{}); ok {
+			if t, ok := obj["type"].(string); ok && t != "" {
 				return t
 			}
-			if nm,ok:= obj["name"].(string); ok && nm!="" {
+			if nm, ok := obj["name"].(string); ok && nm != "" {
 				return nm
 			}
 		}
@@ -144,89 +144,91 @@ func findNpmLicense(verData map[string]interface{}) string {
 
 func parseNodeDependencies(nodeFile string) ([]*NodeDependency, error) {
 	raw, err := os.ReadFile(nodeFile)
-	if err!=nil{
-		return nil,err
+	if err != nil {
+		return nil, err
 	}
 	var pkg map[string]interface{}
-	if e:= json.Unmarshal(raw,&pkg); e!=nil {
-		return nil,e
+	if e := json.Unmarshal(raw, &pkg); e != nil {
+		return nil, e
 	}
 	deps, _ := pkg["dependencies"].(map[string]interface{})
-	if deps==nil {
+	if deps == nil {
 		return nil, fmt.Errorf("no dependencies found in package.json")
 	}
-	visited:= make(map[string]bool)
+	visited := make(map[string]bool)
 	var results []*NodeDependency
 	for nm, ver := range deps {
-		vstr,_:= ver.(string)
-		nd,e:= resolveNodeDependency(nm, removeCaretTilde(vstr), visited)
-		if e==nil && nd!=nil {
-			results= append(results, nd)
+		vstr, _ := ver.(string)
+		nd, e := resolveNodeDependency(nm, removeCaretTilde(vstr), visited)
+		if e == nil && nd != nil {
+			results = append(results, nd)
 		}
 	}
-	return results,nil
+	return results, nil
 }
 
-func resolveNodeDependency(pkgName, version string, visited map[string]bool)(*NodeDependency,error){
-	key:= pkgName+"@"+version
+func resolveNodeDependency(pkgName, version string, visited map[string]bool) (*NodeDependency, error) {
+	key := pkgName + "@" + version
 	if visited[key] {
-		return nil,nil
+		return nil, nil
 	}
-	visited[key]= true
+	visited[key] = true
 
 	url := "https://registry.npmjs.org/" + pkgName
-	resp,err:= http.Get(url)
-	if err!=nil{
+	resp, err := http.Get(url)
+	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	var data map[string]interface{}
-	if e:= json.NewDecoder(resp.Body).Decode(&data); e!=nil{
-		return nil,e
+	if e := json.NewDecoder(resp.Body).Decode(&data); e != nil {
+		return nil, e
 	}
-	if version=="" {
-		if dist,ok:= data["dist-tags"].(map[string]interface{}); ok {
-			if lat,ok:= dist["latest"].(string); ok {
-				version= lat
+	if version == "" {
+		if dist, ok := data["dist-tags"].(map[string]interface{}); ok {
+			if lat, ok := dist["latest"].(string); ok {
+				version = lat
 			}
 		}
 	}
 	license := "Unknown"
 	var trans []*NodeDependency
 
-	if vs,ok:= data["versions"].(map[string]interface{}); ok {
-		if verData,ok:= vs[version].(map[string]interface{}); ok {
-			license= findNpmLicense(verData)
-			if deps,ok:= verData["dependencies"].(map[string]interface{}); ok {
+	if vs, ok := data["versions"].(map[string]interface{}); ok {
+		if verData, ok := vs[version].(map[string]interface{}); ok {
+			license = findNpmLicense(verData)
+			if deps, ok := verData["dependencies"].(map[string]interface{}); ok {
 				for subName, subVer := range deps {
-					sv,_:= subVer.(string)
-					ch, e2:= resolveNodeDependency(subName, removeCaretTilde(sv), visited)
-					if e2==nil && ch!=nil {
-						trans= append(trans, ch)
+					sv, _ := subVer.(string)
+					ch, e2 := resolveNodeDependency(subName, removeCaretTilde(sv), visited)
+					if e2 == nil && ch != nil {
+						trans = append(trans, ch)
 					}
 				}
 			}
 		}
 	}
-	if license=="Unknown" {
-		if fb:= fallbackNpmLicenseMultiLine(pkgName); fb!="" {
-			license= fb
+	if license == "Unknown" {
+		if fb := fallbackNpmLicenseMultiLine(pkgName); fb != "" {
+			license = fb
 		}
 	}
-	nd:= &NodeDependency{
-		Name: pkgName, Version: version,
-		License: license,
-		Details: "https://www.npmjs.com/package/" + pkgName,
-		Copyleft: isCopyleft(license),
+	nd := &NodeDependency{
+		Name:       pkgName,
+		Version:    version,
+		License:    license,
+		Details:    "https://www.npmjs.com/package/" + pkgName,
+		Copyleft:   isCopyleft(license),
 		Transitive: trans,
-		Language:"node",
+		Language:   "node",
 	}
-	return nd,nil
+	return nd, nil
 }
 
 // ---------------------------------------------------------------------------
-// 4) Python approach: parse lines => BFS from PyPI => new logging version
+// 4) Python BFS: parse lines => BFS from PyPI => pass "" for subVer
+// plus the new parsePyRequiresDistLine function that discards constraints
 // ---------------------------------------------------------------------------
 
 type PythonDependency struct {
@@ -241,78 +243,80 @@ type PythonDependency struct {
 
 func parsePythonDependencies(reqFile string) ([]*PythonDependency, error) {
 	f, err := os.Open(reqFile)
-	if err!=nil{
-		return nil,err
+	if err != nil {
+		return nil, err
 	}
 	defer f.Close()
 
 	reqs, err := parseRequirements(f)
-	if err!=nil{
-		return nil,err
+	if err != nil {
+		return nil, err
 	}
 	visited := make(map[string]bool)
 	var results []*PythonDependency
-	for _, r:= range reqs {
+	for _, r := range reqs {
 		d, e2 := resolvePythonDependency(r.name, r.version, visited)
-		if e2==nil && d!=nil {
-			results= append(results, d)
-		} else if e2!=nil {
+		if e2 == nil && d != nil {
+			results = append(results, d)
+		} else if e2 != nil {
 			log.Println("Python parse error for", r.name, ":", e2)
 		}
 	}
-	return results,nil
+	return results, nil
 }
 
 type requirement struct {
 	name, version string
 }
-func parseRequirements(r io.Reader)([]requirement,error){
-	raw,err:= io.ReadAll(r)
-	if err!=nil{
-		return nil,err
+
+func parseRequirements(r io.Reader) ([]requirement, error) {
+	raw, err := io.ReadAll(r)
+	if err != nil {
+		return nil, err
 	}
-	lines:= strings.Split(string(raw),"\n")
+	lines := strings.Split(string(raw), "\n")
 	var out []requirement
-	for _, ln := range lines {
-		sline:= strings.TrimSpace(ln)
-		if sline=="" || strings.HasPrefix(sline,"#") {
+	for _, line := range lines {
+		sline := strings.TrimSpace(line)
+		if sline == "" || strings.HasPrefix(sline, "#") {
 			continue
 		}
-		p:= strings.Split(sline,"==")
-		if len(p)!=2 {
-			p= strings.Split(sline,">=")
-			if len(p)!=2 {
+		p := strings.Split(sline, "==")
+		if len(p) != 2 {
+			p = strings.Split(sline, ">=")
+			if len(p) != 2 {
 				log.Println("Invalid python requirement line:", sline)
 				continue
 			}
 		}
 		nm := strings.TrimSpace(p[0])
 		ver := strings.TrimSpace(p[1])
-		out= append(out, requirement{nm, ver})
+		out = append(out, requirement{nm, ver})
 	}
-	return out,nil
+	return out, nil
 }
+
+// Replacing parsePyRequiresDistLine with a simplified approach
+// that extracts only the package name, ignoring constraints, markers, etc.
 
 func parsePyRequiresDistLine(line string) (string, string) {
-	line = strings.TrimSpace(line)
-	i := strings.Index(line,"[")
-	if i>=0 {
-		j := strings.Index(line,"]")
-		if j> i {
-			line= line[:i]+ line[j+1:]
+	// We discard environment markers, version constraints, etc.
+	// The simplest approach: split on the first non-alphanumeric/underscore/hyphen/dot.
+	parts := strings.FieldsFunc(line, func(r rune) bool {
+		// keep [a-zA-Z0-9._-]
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.' {
+			return false
 		}
-		line= strings.TrimSpace(line)
+		return true
+	})
+	if len(parts) > 0 {
+		name := strings.TrimSpace(parts[0])
+		return name, ""
 	}
-	i2:= strings.Index(line,"(")
-	if i2<0 {
-		return strings.TrimSpace(line), ""
-	}
-	name := strings.TrimSpace(line[:i2])
-	inside:= strings.Trim(line[i2:], "() ")
-	return name, inside
+	return "", ""
 }
 
-// **Your new logging snippet** 
 func resolvePythonDependency(pkgName, version string, visited map[string]bool) (*PythonDependency, error) {
 	key := strings.ToLower(pkgName) + "@" + version
 	if visited[key] {
@@ -321,26 +325,26 @@ func resolvePythonDependency(pkgName, version string, visited map[string]bool) (
 	visited[key] = true
 
 	url := "https://pypi.org/pypi/" + pkgName + "/json"
-	log.Printf("DEBUG: Fetching PyPI data for package: %s", pkgName) // Log fetching attempt
+	log.Printf("DEBUG: Fetching PyPI data for package: %s", pkgName)
 	resp, err := http.Get(url)
 	if err != nil {
-		log.Printf("ERROR: HTTP GET error for package: %s: %v", pkgName, err) // Log HTTP errors
+		log.Printf("ERROR: HTTP GET error for package: %s: %v", pkgName, err)
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		log.Printf("ERROR: PyPI returned status %d for package: %s", resp.StatusCode, pkgName) // Log non-200 statuses
+		log.Printf("ERROR: PyPI returned status %d for package: %s", resp.StatusCode, pkgName)
 		return nil, fmt.Errorf("PyPI returned status: %d for package: %s", resp.StatusCode, pkgName)
 	}
 	var data map[string]interface{}
 	if e := json.NewDecoder(resp.Body).Decode(&data); e != nil {
-		log.Printf("ERROR: JSON decode error for package: %s: %v", pkgName, e) // Log JSON errors
+		log.Printf("ERROR: JSON decode error for package: %s: %v", pkgName, e)
 		return nil, fmt.Errorf("JSON decode error from PyPI for package: %s: %w", pkgName, e)
 	}
 	info, _ := data["info"].(map[string]interface{})
 	if info == nil {
-		log.Printf("ERROR: 'info' section missing in PyPI data for %s", pkgName) // Log missing 'info' section
+		log.Printf("ERROR: 'info' section missing in PyPI data for %s", pkgName)
 		return nil, fmt.Errorf("info section missing in PyPI data for %s", pkgName)
 	}
 	if version == "" {
@@ -352,7 +356,7 @@ func resolvePythonDependency(pkgName, version string, visited map[string]bool) (
 	if l, ok := info["license"].(string); ok && l != "" {
 		license = l
 	} else {
-		log.Printf("WARNING: License information not found on PyPI for package: %s@%s", pkgName, version) // missing license info
+		log.Printf("WARNING: License information not found on PyPI for package: %s@%s", pkgName, version)
 	}
 
 	var trans []*PythonDependency
@@ -369,9 +373,8 @@ func resolvePythonDependency(pkgName, version string, visited map[string]bool) (
 				log.Printf("WARNING: parsePyRequiresDistLine failed for line: '%s' in package %s", line, pkgName)
 				continue
 			}
-			// CHANGE: We pass "" for subVer so we only use the package name in the next BFS call
-			log.Printf("DEBUG: Resolving transitive dependency: %s (version constraint: %s) of %s@%s", subName, subVer, pkgName, version)
-			ch, e2 := resolvePythonDependency(subName, "", visited) // <<--- pass "" as version
+			log.Printf("DEBUG: Resolving transitive dependency: %s (discarded constraints: %s) of %s@%s", subName, subVer, pkgName, version)
+			ch, e2 := resolvePythonDependency(subName, "", visited) // pass "" for version
 			if e2 != nil {
 				log.Printf("ERROR: Error resolving transitive dependency %s of %s: %v", subName, pkgName, e2)
 			}
@@ -408,45 +411,46 @@ type FlatDep struct {
 	Parent   string
 }
 
-// Node flatten
+// Flatten Node
 func flattenNodeAll(nds []*NodeDependency, parent string) []FlatDep {
 	var out []FlatDep
 	for _, nd := range nds {
-		out= append(out, FlatDep{
+		out = append(out, FlatDep{
 			Name: nd.Name, Version: nd.Version, License: nd.License,
 			Details: nd.Details, Language: nd.Language, Parent: parent,
 		})
-		if len(nd.Transitive)>0 {
-			out= append(out, flattenNodeAll(nd.Transitive, nd.Name)...)
+		if len(nd.Transitive) > 0 {
+			out = append(out, flattenNodeAll(nd.Transitive, nd.Name)...)
 		}
 	}
 	return out
 }
 
-// Python flatten
+// Flatten Python
 func flattenPyAll(pds []*PythonDependency, parent string) []FlatDep {
 	var out []FlatDep
 	for _, pd := range pds {
-		out= append(out, FlatDep{
+		out = append(out, FlatDep{
 			Name: pd.Name, Version: pd.Version, License: pd.License,
 			Details: pd.Details, Language: pd.Language, Parent: parent,
 		})
-		if len(pd.Transitive)>0 {
-			out= append(out, flattenPyAll(pd.Transitive, pd.Name)...)
+		if len(pd.Transitive) > 0 {
+			out = append(out, flattenPyAll(pd.Transitive, pd.Name)...)
 		}
 	}
 	return out
 }
 
+// expansions for Node BFS
 func buildNodeTreeHTML(nd *NodeDependency) string {
 	sum := fmt.Sprintf("%s@%s (License: %s)", nd.Name, nd.Version, nd.License)
 	var sb strings.Builder
 	sb.WriteString("<details><summary>")
 	sb.WriteString(template.HTMLEscapeString(sum))
 	sb.WriteString("</summary>\n")
-	if len(nd.Transitive)>0 {
+	if len(nd.Transitive) > 0 {
 		sb.WriteString("<ul>\n")
-		for _,ch:= range nd.Transitive {
+		for _, ch := range nd.Transitive {
 			sb.WriteString("<li>")
 			sb.WriteString(buildNodeTreeHTML(ch))
 			sb.WriteString("</li>\n")
@@ -457,7 +461,7 @@ func buildNodeTreeHTML(nd *NodeDependency) string {
 	return sb.String()
 }
 func buildNodeTreesHTML(nodes []*NodeDependency) string {
-	if len(nodes)==0{
+	if len(nodes) == 0 {
 		return "<p>No Node dependencies found.</p>"
 	}
 	var sb strings.Builder
@@ -467,15 +471,16 @@ func buildNodeTreesHTML(nodes []*NodeDependency) string {
 	return sb.String()
 }
 
+// expansions for Python BFS
 func buildPythonTreeHTML(pd *PythonDependency) string {
 	sum := fmt.Sprintf("%s@%s (License: %s)", pd.Name, pd.Version, pd.License)
 	var sb strings.Builder
 	sb.WriteString("<details><summary>")
 	sb.WriteString(template.HTMLEscapeString(sum))
 	sb.WriteString("</summary>\n")
-	if len(pd.Transitive)>0 {
+	if len(pd.Transitive) > 0 {
 		sb.WriteString("<ul>\n")
-		for _,ch:= range pd.Transitive {
+		for _, ch := range pd.Transitive {
 			sb.WriteString("<li>")
 			sb.WriteString(buildPythonTreeHTML(ch))
 			sb.WriteString("</li>\n")
@@ -486,7 +491,7 @@ func buildPythonTreeHTML(pd *PythonDependency) string {
 	return sb.String()
 }
 func buildPythonTreesHTML(py []*PythonDependency) string {
-	if len(py)==0 {
+	if len(py) == 0 {
 		return "<p>No Python dependencies found.</p>"
 	}
 	var sb strings.Builder
@@ -496,7 +501,8 @@ func buildPythonTreesHTML(py []*PythonDependency) string {
 	return sb.String()
 }
 
-var reportTemplate= `
+// The final HTML with color-coded table
+var reportTemplate = `
 <!DOCTYPE html>
 <html>
 <head>
@@ -559,29 +565,29 @@ summary{cursor:pointer;font-weight:bold}
 </html>
 `
 
-func main(){
+func main() {
 	// 1) Node approach
-	nf := findFile(".", "package.json")
+	nodeFile := findFile(".", "package.json")
 	var nodeDeps []*NodeDependency
-	if nf!="" {
-		nd,err := parseNodeDependencies(nf)
-		if err==nil {
-			nodeDeps= nd
+	if nodeFile != "" {
+		nd, err := parseNodeDependencies(nodeFile)
+		if err == nil {
+			nodeDeps = nd
 		} else {
 			log.Println("Node parse error:", err)
 		}
 	}
 
 	// 2) Python approach
-	pf := findFile(".", "requirements.txt")
-	if pf=="" {
-		pf= findFile(".", "requirement.txt")
+	pyFile := findFile(".", "requirements.txt")
+	if pyFile == "" {
+		pyFile = findFile(".", "requirement.txt")
 	}
 	var pyDeps []*PythonDependency
-	if pf!="" {
-		pd,err := parsePythonDependencies(pf)
-		if err==nil {
-			pyDeps= pd
+	if pyFile != "" {
+		pd, err := parsePythonDependencies(pyFile)
+		if err == nil {
+			pyDeps = pd
 		} else {
 			log.Println("Python parse error:", err)
 		}
@@ -594,8 +600,8 @@ func main(){
 
 	// 4) Count copyleft
 	copyleftCount := 0
-	for _, d:= range allDeps {
-		if isCopyleft(d.License){
+	for _, d := range allDeps {
+		if isCopyleft(d.License) {
 			copyleftCount++
 		}
 	}
@@ -604,34 +610,34 @@ func main(){
 
 	// 5) expansions
 	nodeHTML := buildNodeTreesHTML(nodeDeps)
-	pyHTML   := buildPythonTreesHTML(pyDeps)
+	pyHTML := buildPythonTreesHTML(pyDeps)
 
-	data := struct{
+	// final data
+	data := struct {
 		Summary string
-		Deps []FlatDep
+		Deps    []FlatDep
 		NodeHTML template.HTML
-		PyHTML template.HTML
+		PyHTML   template.HTML
 	}{
 		Summary: summary,
-		Deps: allDeps,
+		Deps:    allDeps,
 		NodeHTML: template.HTML(nodeHTML),
-		PyHTML: template.HTML(pyHTML),
+		PyHTML:   template.HTML(pyHTML),
 	}
 
-	tmpl, e:= template.New("report").Funcs(template.FuncMap{
+	tmpl, e := template.New("report").Funcs(template.FuncMap{
 		"isCopyleft": isCopyleft,
 	}).Parse(reportTemplate)
-	if e!=nil{
+	if e != nil {
 		log.Fatal("Template parse error:", e)
 	}
-
-	out, e2:= os.Create("dependency-license-report.html")
-	if e2!=nil{
+	out, e2 := os.Create("dependency-license-report.html")
+	if e2 != nil {
 		log.Fatal("Create file error:", e2)
 	}
 	defer out.Close()
 
-	if e3:= tmpl.Execute(out, data); e3!=nil{
+	if e3 := tmpl.Execute(out, data); e3 != nil {
 		log.Fatal("Template exec error:", e3)
 	}
 
