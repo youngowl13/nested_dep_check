@@ -6,14 +6,13 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
-
-	"io/fs"
 )
 
 // ---------------------------------------------------------------------------
@@ -398,9 +397,7 @@ func resolvePythonDependency(pkgName, version string, visited map[string]bool) (
 }
 
 // ---------------------------------------------------------------------------
-// 5) Flatten + <details> expansions => single HTML
-//  **CHANGES**: We set the parent param properly in flattenNodeAll, flattenPyAll
-//  so that transitive dependencies appear with correct Parent name
+// 5) Flatten + <details> expansions => single HTML, but now *two* tables
 // ---------------------------------------------------------------------------
 
 type FlatDep struct {
@@ -446,13 +443,13 @@ func flattenPyAll(pds []*PythonDependency, parent string) []FlatDep {
 			Parent:   parent, // ensure the parent is set here
 		})
 		if len(pd.Transitive) > 0 {
-			// for each transitive child, we pass pd.Name as the new parent
 			out = append(out, flattenPyAll(pd.Transitive, pd.Name)...)
 		}
 	}
 	return out
 }
 
+// Build HTML for Node BFS expansions
 func buildNodeTreeHTML(nd *NodeDependency) string {
 	sum := fmt.Sprintf("%s@%s (License: %s)", nd.Name, nd.Version, nd.License)
 	var sb strings.Builder
@@ -483,7 +480,7 @@ func buildNodeTreesHTML(nodes []*NodeDependency) string {
 	return sb.String()
 }
 
-// expansions for Python BFS
+// Build HTML for Python BFS expansions
 func buildPythonTreeHTML(pd *PythonDependency) string {
 	sum := fmt.Sprintf("%s@%s (License: %s)", pd.Name, pd.Version, pd.License)
 	var sb strings.Builder
@@ -514,7 +511,11 @@ func buildPythonTreesHTML(py []*PythonDependency) string {
 	return sb.String()
 }
 
-// The final HTML with color-coded table
+// ---------------------------------------------------------------------------
+// Template for final HTML – now with two separate tables, each sorted
+// and the BFS expansions below each table
+// ---------------------------------------------------------------------------
+
 var reportTemplate = `
 <!DOCTYPE html>
 <html>
@@ -540,7 +541,10 @@ summary{cursor:pointer;font-weight:bold}
 <h2>Summary</h2>
 <p>{{.Summary}}</p>
 
-<h2>Dependencies Table</h2>
+<h2>Node Dependencies (from: {{.NodeFilePath}})</h2>
+{{if eq (len .NodeDepsFlat) 0}}
+<p>No Node dependencies found.</p>
+{{else}}
 <table>
 <tr>
   <th>Name</th>
@@ -550,7 +554,7 @@ summary{cursor:pointer;font-weight:bold}
   <th>Language</th>
   <th>Details</th>
 </tr>
-{{range .Deps}}
+{{range .NodeDepsFlat}}
 <tr>
   <td>{{.Name}}</td>
   <td>{{.Version}}</td>
@@ -563,13 +567,44 @@ summary{cursor:pointer;font-weight:bold}
 </tr>
 {{end}}
 </table>
+{{end}}
 
-<h2>Node.js Dependencies</h2>
+<h3>Node BFS Expansions</h3>
 <div>
 {{.NodeHTML}}
 </div>
 
-<h2>Python Dependencies</h2>
+<hr />
+
+<h2>Python Dependencies (from: {{.PyFilePath}})</h2>
+{{if eq (len .PyDepsFlat) 0}}
+<p>No Python dependencies found.</p>
+{{else}}
+<table>
+<tr>
+  <th>Name</th>
+  <th>Version</th>
+  <th>License</th>
+  <th>Parent</th>
+  <th>Language</th>
+  <th>Details</th>
+</tr>
+{{range .PyDepsFlat}}
+<tr>
+  <td>{{.Name}}</td>
+  <td>{{.Version}}</td>
+  <td class="{{if eq .License "Unknown"}}unknown{{else if isCopyleft .License}}copyleft{{else}}non-copyleft{{end}}">
+    {{.License}}
+  </td>
+  <td>{{.Parent}}</td>
+  <td>{{.Language}}</td>
+  <td><a href="{{.Details}}" target="_blank">{{.Details}}</a></td>
+</tr>
+{{end}}
+</table>
+{{end}}
+
+<h3>Python BFS Expansions</h3>
 <div>
 {{.PyHTML}}
 </div>
@@ -579,7 +614,9 @@ summary{cursor:pointer;font-weight:bold}
 `
 
 func main() {
-	// 1) Node approach
+	//-----------------------------------------------------------------------
+	// 1) Identify nodeFile and pythonFile
+	//-----------------------------------------------------------------------
 	nodeFile := findFile(".", "package.json")
 	var nodeDeps []*NodeDependency
 	if nodeFile != "" {
@@ -591,7 +628,6 @@ func main() {
 		}
 	}
 
-	// 2) Python approach
 	pyFile := findFile(".", "requirements.txt")
 	if pyFile == "" {
 		pyFile = findFile(".", "requirement.txt")
@@ -606,23 +642,18 @@ func main() {
 		}
 	}
 
-	// 3) Flatten
-	fn := flattenNodeAll(nodeDeps, "Direct")
-	fp := flattenPyAll(pyDeps, "Direct")
-	allDeps := append(fn, fp...)
+	//-----------------------------------------------------------------------
+	// 2) Flatten dependencies for each language
+	//-----------------------------------------------------------------------
+	nodeFlat := flattenNodeAll(nodeDeps, "Direct")
+	pyFlat := flattenPyAll(pyDeps, "Direct")
 
-	// -----------------------------------------------------------------------
-	// *** NEW: Sort so that copyleft (red) items come first, then unknown (yellow),
-	// and then everything else (green). We keep everything else the same. ***
-	// -----------------------------------------------------------------------
-	sort.SliceStable(allDeps, func(i, j int) bool {
-		li := allDeps[i].License
-		lj := allDeps[j].License
-
-		// Helper to assign each license a sort group:
-		//  1 => Copyleft
-		//  2 => Unknown
-		//  3 => Everything else
+	//-----------------------------------------------------------------------
+	// 3) Sort within each language so that copyleft first, unknown second, rest last
+	//-----------------------------------------------------------------------
+	sort.SliceStable(nodeFlat, func(i, j int) bool {
+		li := nodeFlat[i].License
+		lj := nodeFlat[j].License
 		getGroup := func(l string) int {
 			if isCopyleft(l) {
 				return 1
@@ -631,51 +662,83 @@ func main() {
 			}
 			return 3
 		}
-
 		return getGroup(li) < getGroup(lj)
 	})
-	// -----------------------------------------------------------------------
 
-	// 4) Count copyleft
+	sort.SliceStable(pyFlat, func(i, j int) bool {
+		li := pyFlat[i].License
+		lj := pyFlat[j].License
+		getGroup := func(l string) int {
+			if isCopyleft(l) {
+				return 1
+			} else if l == "Unknown" {
+				return 2
+			}
+			return 3
+		}
+		return getGroup(li) < getGroup(lj)
+	})
+
+	//-----------------------------------------------------------------------
+	// 4) Create a summary
+	//-----------------------------------------------------------------------
+	nodeTopCount := len(nodeDeps) // top-level from parse
+	pyTopCount := len(pyDeps)
 	copyleftCount := 0
-	for _, d := range allDeps {
+	for _, d := range nodeFlat {
+		if isCopyleft(d.License) {
+			copyleftCount++
+		}
+	}
+	for _, d := range pyFlat {
 		if isCopyleft(d.License) {
 			copyleftCount++
 		}
 	}
 	summary := fmt.Sprintf("Node top-level: %d, Python top-level: %d, Copyleft: %d",
-		len(nodeDeps), len(pyDeps), copyleftCount)
+		nodeTopCount, pyTopCount, copyleftCount)
 
-	// 5) expansions for the nested <details>
+	//-----------------------------------------------------------------------
+	// 5) BFS expansions
+	//-----------------------------------------------------------------------
 	nodeHTML := buildNodeTreesHTML(nodeDeps)
 	pyHTML := buildPythonTreesHTML(pyDeps)
 
+	//-----------------------------------------------------------------------
+	// 6) Execute final template
+	//-----------------------------------------------------------------------
 	data := struct {
-		Summary  string
-		Deps     []FlatDep
-		NodeHTML template.HTML
-		PyHTML   template.HTML
+		Summary      string
+		NodeFilePath string
+		PyFilePath   string
+		NodeDepsFlat []FlatDep
+		PyDepsFlat   []FlatDep
+		NodeHTML     template.HTML
+		PyHTML       template.HTML
 	}{
-		Summary:  summary,
-		Deps:     allDeps,
-		NodeHTML: template.HTML(nodeHTML),
-		PyHTML:   template.HTML(pyHTML),
+		Summary:      summary,
+		NodeFilePath: nodeFile,
+		PyFilePath:   pyFile,
+		NodeDepsFlat: nodeFlat,
+		PyDepsFlat:   pyFlat,
+		NodeHTML:     template.HTML(nodeHTML),
+		PyHTML:       template.HTML(pyHTML),
 	}
 
-	tmpl, e := template.New("report").Funcs(template.FuncMap{
+	tmpl, err := template.New("report").Funcs(template.FuncMap{
 		"isCopyleft": isCopyleft,
 	}).Parse(reportTemplate)
-	if e != nil {
-		log.Fatal("Template parse error:", e)
+	if err != nil {
+		log.Fatal("Template parse error:", err)
 	}
-	out, e2 := os.Create("dependency-license-report.html")
-	if e2 != nil {
-		log.Fatal("Create file error:", e2)
+	out, err := os.Create("dependency-license-report.html")
+	if err != nil {
+		log.Fatal("Create file error:", err)
 	}
 	defer out.Close()
 
-	if e3 := tmpl.Execute(out, data); e3 != nil {
-		log.Fatal("Template exec error:", e3)
+	if err := tmpl.Execute(out, data); err != nil {
+		log.Fatal("Template exec error:", err)
 	}
 
 	fmt.Println("dependency-license-report.html generated!")
