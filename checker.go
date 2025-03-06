@@ -106,6 +106,7 @@ func fallbackNpmLicenseMultiLine(pkgName string) string {
             if lic != "" {
                 return lic
             }
+            // check up to 10 lines below in case the text is spread out
             for j := i + 1; j < len(lines) && j <= i+10; j++ {
                 lic2 := parseLicenseLine(lines[j])
                 if lic2 != "" {
@@ -185,6 +186,7 @@ func resolveNodeDependency(pkgName, version string, visited map[string]bool) (*N
     if e := json.NewDecoder(resp.Body).Decode(&data); e != nil {
         return nil, e
     }
+    // If version is empty, use dist-tags.latest
     if version == "" {
         if dist, ok := data["dist-tags"].(map[string]interface{}); ok {
             if lat, ok := dist["latest"].(string); ok {
@@ -192,23 +194,46 @@ func resolveNodeDependency(pkgName, version string, visited map[string]bool) (*N
             }
         }
     }
-    license := "Unknown"
-    var trans []*NodeDependency
 
-    if vs, ok := data["versions"].(map[string]interface{}); ok {
-        if verData, ok := vs[version].(map[string]interface{}); ok {
-            license = findNpmLicense(verData)
-            if deps, ok := verData["dependencies"].(map[string]interface{}); ok {
-                for subName, subVer := range deps {
-                    sv, _ := subVer.(string)
-                    ch, e2 := resolveNodeDependency(subName, removeCaretTilde(sv), visited)
-                    if e2 == nil && ch != nil {
-                        trans = append(trans, ch)
-                    }
+    vs, _ := data["versions"].(map[string]interface{})
+    if vs == nil {
+        // no "versions" block => can't proceed
+        return nil, nil
+    }
+
+    verData, ok := vs[version].(map[string]interface{})
+    if !ok {
+        // FALLBACK: if exact version doesn't exist (e.g. "1.0.1 || ^2.0.0"),
+        // fallback to "latest"
+        if dist, ok2 := data["dist-tags"].(map[string]interface{}); ok2 {
+            if lat, ok2 := dist["latest"].(string); ok2 {
+                if vMap, ok3 := vs[lat].(map[string]interface{}); ok3 {
+                    log.Printf("Node fallback: Could not find exact version %s for %s, using 'latest' => %s",
+                        version, pkgName, lat)
+                    version = lat
+                    verData = vMap
+                    ok = true
                 }
             }
         }
     }
+
+    license := "Unknown"
+    var trans []*NodeDependency
+
+    if ok && verData != nil {
+        license = findNpmLicense(verData)
+        if deps, ok2 := verData["dependencies"].(map[string]interface{}); ok2 {
+            for subName, subVer := range deps {
+                sv, _ := subVer.(string)
+                ch, e2 := resolveNodeDependency(subName, removeCaretTilde(sv), visited)
+                if e2 == nil && ch != nil {
+                    trans = append(trans, ch)
+                }
+            }
+        }
+    }
+
     if license == "Unknown" {
         if fb := fallbackNpmLicenseMultiLine(pkgName); fb != "" {
             license = fb
@@ -227,7 +252,7 @@ func resolveNodeDependency(pkgName, version string, visited map[string]bool) (*N
 }
 
 // ---------------------------------------------------------------------------
-// 4) Python BFS: parse lines => BFS from PyPI => pass "" for subVer
+// 4) Python BFS with fallback: parse lines => BFS from PyPI => fallback
 // ---------------------------------------------------------------------------
 
 type PythonDependency struct {
@@ -280,6 +305,7 @@ func parseRequirements(r io.Reader) ([]requirement, error) {
         if sline == "" || strings.HasPrefix(sline, "#") {
             continue
         }
+        // we handle "==" or ">="; ignoring everything else
         p := strings.Split(sline, "==")
         if len(p) != 2 {
             p = strings.Split(sline, ">=")
@@ -295,8 +321,8 @@ func parseRequirements(r io.Reader) ([]requirement, error) {
     return out, nil
 }
 
-// parsePyRequiresDistLine => discards environment markers, version constraints
-// to keep only the raw package name
+// parsePyRequiresDistLine => discard environment markers, version constraints
+// keep only the raw package name
 func parsePyRequiresDistLine(line string) (string, string) {
     parts := strings.FieldsFunc(line, func(r rune) bool {
         // keep [a-zA-Z0-9._-], discard everything else
@@ -338,16 +364,35 @@ func resolvePythonDependency(pkgName, version string, visited map[string]bool) (
         log.Printf("ERROR: JSON decode error for package: %s: %v", pkgName, e)
         return nil, fmt.Errorf("JSON decode error from PyPI for package: %s: %w", pkgName, e)
     }
+
     info, _ := data["info"].(map[string]interface{})
     if info == nil {
         log.Printf("ERROR: 'info' section missing in PyPI data for %s", pkgName)
         return nil, fmt.Errorf("info section missing in PyPI data for %s", pkgName)
     }
+
+    // If version not specified, use info["version"] (PyPI's "latest" in many cases)
     if version == "" {
         if v2, ok := info["version"].(string); ok {
             version = v2
         }
     }
+
+    // --- NEW FALLBACK: If there's no release with the EXACT version,
+    //     fall back to info["version"] (like "latest" in Node).
+    releases, _ := data["releases"].(map[string]interface{})
+    if releases != nil {
+        if _, ok := releases[version]; !ok {
+            // fallback to "latest" known to PyPI
+            if infoVer, ok2 := info["version"].(string); ok2 && infoVer != "" {
+                log.Printf("Python fallback: Could not find exact release %s for %s, using info.version => %s",
+                    version, pkgName, infoVer)
+                version = infoVer
+            }
+        }
+    }
+
+    // Now proceed with the BFS
     license := "Unknown"
     if l, ok := info["license"].(string); ok && l != "" {
         license = l
@@ -369,8 +414,8 @@ func resolvePythonDependency(pkgName, version string, visited map[string]bool) (
                 log.Printf("WARNING: parsePyRequiresDistLine failed for line: '%s' in package %s", line, pkgName)
                 continue
             }
-            log.Printf("DEBUG: Resolving transitive dependency: %s (discarded constraints: %s) of %s@%s", subName, subVer, pkgName, version)
-            // pass "" for version in BFS call
+            log.Printf("DEBUG: Resolving transitive dependency: %s (discarded constraints: %s) of %s@%s",
+                subName, subVer, pkgName, version)
             ch, e2 := resolvePythonDependency(subName, "", visited)
             if e2 != nil {
                 log.Printf("ERROR: Error resolving transitive dependency %s of %s: %v", subName, pkgName, e2)
@@ -396,24 +441,24 @@ func resolvePythonDependency(pkgName, version string, visited map[string]bool) (
 }
 
 // ---------------------------------------------------------------------------
-// 5) Flatten: now we store both immediate parent + top-level root
+// 5) Flatten with top-level tracking
 // ---------------------------------------------------------------------------
 
 type FlatDep struct {
-    Name      string
-    Version   string
-    License   string
-    Details   string
-    Language  string
-    Parent    string // immediate parent ("Direct" if top-level)
-    TopLevel  string // the top-level dependency from which this chain originates
+    Name     string
+    Version  string
+    License  string
+    Details  string
+    Language string
+    Parent   string
+    TopLevel string
 }
 
 // Flatten Node (with top-level tracking)
 func flattenNodeAllWithTop(nds []*NodeDependency) []FlatDep {
     var out []FlatDep
     for _, nd := range nds {
-        // for each top-level Node dep, we set parent="Direct" and top=nd.Name
+        // For each top-level Node dep, we set parent="Direct" and top=nd.Name
         out = append(out, flattenNodeOne(nd, "Direct", nd.Name)...)
     }
     return out
@@ -441,7 +486,7 @@ func flattenNodeOne(nd *NodeDependency, parent, top string) []FlatDep {
 func flattenPyAllWithTop(pds []*PythonDependency) []FlatDep {
     var out []FlatDep
     for _, pd := range pds {
-        // for each top-level Python dep, we set parent="Direct" and top=pd.Name
+        // For each top-level Python dep, we set parent="Direct" and top=pd.Name
         out = append(out, flattenPyOne(pd, "Direct", pd.Name)...)
     }
     return out
@@ -465,7 +510,10 @@ func flattenPyOne(pd *PythonDependency, parent, top string) []FlatDep {
     return out
 }
 
-// Build HTML expansions for Node BFS
+// ---------------------------------------------------------------------------
+// BFS-expansion HTML for Node and Python
+// ---------------------------------------------------------------------------
+
 func buildNodeTreeHTML(nd *NodeDependency) string {
     sum := fmt.Sprintf("%s@%s (License: %s)", nd.Name, nd.Version, nd.License)
     var sb strings.Builder
@@ -496,7 +544,6 @@ func buildNodeTreesHTML(nodes []*NodeDependency) string {
     return sb.String()
 }
 
-// Build HTML expansions for Python BFS
 func buildPythonTreeHTML(pd *PythonDependency) string {
     sum := fmt.Sprintf("%s@%s (License: %s)", pd.Name, pd.Version, pd.License)
     var sb strings.Builder
@@ -528,7 +575,7 @@ func buildPythonTreesHTML(py []*PythonDependency) string {
 }
 
 // ---------------------------------------------------------------------------
-// Now the final HTML with TWO separate tables, each has a new "Top-Level" column
+// Final HTML: two separate tables + BFS expansions + "Top-Level" column
 // ---------------------------------------------------------------------------
 
 var reportTemplate = `
@@ -662,9 +709,9 @@ func main() {
 
     // 3) Flatten with top-level tracking
     nodeFlat := flattenNodeAllWithTop(nodeDeps)
-    pyFlat  := flattenPyAllWithTop(pyDeps)
+    pyFlat := flattenPyAllWithTop(pyDeps)
 
-    // 4) Sort each table so that copyleft first, unknown second, others last
+    // 4) Sort each table so that copyleft first, unknown second, rest last
     sort.SliceStable(nodeFlat, func(i, j int) bool {
         li := nodeFlat[i].License
         lj := nodeFlat[j].License
@@ -712,7 +759,7 @@ func main() {
 
     // 6) BFS expansions
     nodeHTML := buildNodeTreesHTML(nodeDeps)
-    pyHTML   := buildPythonTreesHTML(pyDeps)
+    pyHTML := buildPythonTreesHTML(pyDeps)
 
     // 7) Execute final template
     data := struct {
