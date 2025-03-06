@@ -1,4 +1,5 @@
 package main
+
 import (
 	"bufio"
 	"encoding/json"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"io/fs"
@@ -36,10 +38,10 @@ func findFile(root, target string) string {
 
 func isCopyleft(license string) bool {
 	copyleftLicenses := []string{
-		"GPL","GNU GENERAL PUBLIC LICENSE","LGPL","GNU LESSER GENERAL PUBLIC LICENSE",
-		"AGPL","GNU AFFERO GENERAL PUBLIC LICENSE","MPL","MOZILLA PUBLIC LICENSE",
-		"CC-BY-SA","CREATIVE COMMONS ATTRIBUTION-SHAREALIKE","EPL","ECLIPSE PUBLIC LICENSE",
-		"OFL","OPEN FONT LICENSE","CPL","COMMON PUBLIC LICENSE","OSL","OPEN SOFTWARE LICENSE",
+		"GPL", "GNU GENERAL PUBLIC LICENSE", "LGPL", "GNU LESSER GENERAL PUBLIC LICENSE",
+		"AGPL", "GNU AFFERO GENERAL PUBLIC LICENSE", "MPL", "MOZILLA PUBLIC LICENSE",
+		"CC-BY-SA", "CREATIVE COMMONS ATTRIBUTION-SHAREALIKE", "EPL", "ECLIPSE PUBLIC LICENSE",
+		"OFL", "OPEN FONT LICENSE", "CPL", "COMMON PUBLIC LICENSE", "OSL", "OPEN SOFTWARE LICENSE",
 	}
 	up := strings.ToUpper(license)
 	for _, kw := range copyleftLicenses {
@@ -52,8 +54,8 @@ func isCopyleft(license string) bool {
 
 func parseLicenseLine(line string) string {
 	known := []string{
-		"MIT","ISC","BSD","APACHE","ARTISTIC","ZLIB","WTFPL","CDDL","UNLICENSE","EUPL",
-		"MPL","CC0","LGPL","AGPL","BSD-2-CLAUSE","BSD-3-CLAUSE","X11",
+		"MIT", "ISC", "BSD", "APACHE", "ARTISTIC", "ZLIB", "WTFPL", "CDDL", "UNLICENSE", "EUPL",
+		"MPL", "CC0", "LGPL", "AGPL", "BSD-2-CLAUSE", "BSD-3-CLAUSE", "X11",
 	}
 	up := strings.ToUpper(line)
 	for _, kw := range known {
@@ -384,13 +386,13 @@ func resolvePythonDependency(pkgName, version string, visited map[string]bool) (
 	}
 
 	py := &PythonDependency{
-		Name:      pkgName,
-		Version:   version,
-		License:   license,
-		Details:   "https://pypi.org/project/" + pkgName,
-		Copyleft:  isCopyleft(license),
+		Name:       pkgName,
+		Version:    version,
+		License:    license,
+		Details:    "https://pypi.org/project/" + pkgName,
+		Copyleft:   isCopyleft(license),
 		Transitive: trans,
-		Language:  "python",
+		Language:   "python",
 	}
 	return py, nil
 }
@@ -416,12 +418,12 @@ func flattenNodeAll(nds []*NodeDependency, parent string) []FlatDep {
 	for _, nd := range nds {
 		// for each direct child in 'nds', set its parent to the 'parent' param
 		out = append(out, FlatDep{
-			Name:    nd.Name,
-			Version: nd.Version,
-			License: nd.License,
-			Details: nd.Details,
+			Name:     nd.Name,
+			Version:  nd.Version,
+			License:  nd.License,
+			Details:  nd.Details,
 			Language: nd.Language,
-			Parent: parent, // Ensure the parent is set here
+			Parent:   parent, // Ensure the parent is set here
 		})
 		if len(nd.Transitive) > 0 {
 			// for each transitive child, we pass nd.Name as the new parent
@@ -436,12 +438,12 @@ func flattenPyAll(pds []*PythonDependency, parent string) []FlatDep {
 	var out []FlatDep
 	for _, pd := range pds {
 		out = append(out, FlatDep{
-			Name:    pd.Name,
-			Version: pd.Version,
-			License: pd.License,
-			Details: pd.Details,
+			Name:     pd.Name,
+			Version:  pd.Version,
+			License:  pd.License,
+			Details:  pd.Details,
 			Language: pd.Language,
-			Parent: parent, // ensure the parent is set here
+			Parent:   parent, // ensure the parent is set here
 		})
 		if len(pd.Transitive) > 0 {
 			// for each transitive child, we pass pd.Name as the new parent
@@ -500,6 +502,7 @@ func buildPythonTreeHTML(pd *PythonDependency) string {
 	sb.WriteString("</details>\n")
 	return sb.String()
 }
+
 func buildPythonTreesHTML(py []*PythonDependency) string {
 	if len(py) == 0 {
 		return "<p>No Python dependencies found.</p>"
@@ -604,10 +607,34 @@ func main() {
 	}
 
 	// 3) Flatten
-	// The parent param is "Direct" for top-level
 	fn := flattenNodeAll(nodeDeps, "Direct")
 	fp := flattenPyAll(pyDeps, "Direct")
 	allDeps := append(fn, fp...)
+
+	// -----------------------------------------------------------------------
+	// *** NEW: Sort so that copyleft (red) items come first, then unknown (yellow),
+	// and then everything else (green). We keep everything else the same. ***
+	// -----------------------------------------------------------------------
+	sort.SliceStable(allDeps, func(i, j int) bool {
+		li := allDeps[i].License
+		lj := allDeps[j].License
+
+		// Helper to assign each license a sort group:
+		//  1 => Copyleft
+		//  2 => Unknown
+		//  3 => Everything else
+		getGroup := func(l string) int {
+			if isCopyleft(l) {
+				return 1
+			} else if l == "Unknown" {
+				return 2
+			}
+			return 3
+		}
+
+		return getGroup(li) < getGroup(lj)
+	})
+	// -----------------------------------------------------------------------
 
 	// 4) Count copyleft
 	copyleftCount := 0
@@ -624,13 +651,13 @@ func main() {
 	pyHTML := buildPythonTreesHTML(pyDeps)
 
 	data := struct {
-		Summary string
-		Deps    []FlatDep
+		Summary  string
+		Deps     []FlatDep
 		NodeHTML template.HTML
 		PyHTML   template.HTML
 	}{
-		Summary: summary,
-		Deps:    allDeps,
+		Summary:  summary,
+		Deps:     allDeps,
 		NodeHTML: template.HTML(nodeHTML),
 		PyHTML:   template.HTML(pyHTML),
 	}
