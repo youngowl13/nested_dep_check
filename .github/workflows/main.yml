@@ -28,7 +28,7 @@ jobs:
         run: |
           go mod init checker || true
           go mod tidy
-          GOOS=linux GOARCH=amd64 go build -o license-checker checker.go
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o license-checker checker.go
           chmod +x license-checker
           ls -la
           ./license-checker
