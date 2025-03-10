@@ -1,5 +1,4 @@
 name: License Checker Workflow
-
 on:
   push:
     branches:
