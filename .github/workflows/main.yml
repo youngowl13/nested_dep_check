@@ -21,7 +21,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v4
         with:
-          go-version: '1.23' # Specify Go version here
+          go-version: '1.24.2' # Specify Go version here
 
       # Step 3: Build and run the Go code
       - name: Build and Run License Checker
