@@ -27,6 +27,7 @@ jobs:
       - name: Build and Run License Checker
         run: |
           go mod init checker || true
+          go get golang.org/x/crypto@v0.31.0
           go mod tidy
           GOOS=linux go build -o license-checker checker.go
           chmod +x license-checker
