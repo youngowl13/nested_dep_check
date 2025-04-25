@@ -13,7 +13,6 @@ import (
     "path/filepath"
     "sort"
     "strings"
-    _ "golang.org/x/crypto/argon2" // 👈 forces go to include x/crypto in the binary
 )
 
 // ---------------------------------------------------------------------------
